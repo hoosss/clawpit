@@ -20,12 +20,14 @@ async fn main() -> anyhow::Result<()> {
         .ok()
         .and_then(|p| p.parse().ok())
         .unwrap_or(DEFAULT_PORT);
-    let proc_root = PathBuf::from(
-        std::env::var("PF_PROC_ROOT").unwrap_or_else(|_| "/proc".into()),
-    );
+    let proc_root = PathBuf::from(std::env::var("PF_PROC_ROOT").unwrap_or_else(|_| "/proc".into()));
 
     let state = AppState::new();
-    tokio::spawn(discovery_loop(proc_root, state.clone(), DEFAULT_SCAN_INTERVAL));
+    tokio::spawn(discovery_loop(
+        proc_root,
+        state.clone(),
+        DEFAULT_SCAN_INTERVAL,
+    ));
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     let listener = tokio::net::TcpListener::bind(addr).await?;

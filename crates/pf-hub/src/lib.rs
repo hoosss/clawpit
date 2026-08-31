@@ -38,6 +38,12 @@ impl AppState {
     }
 }
 
+impl Default for AppState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// 组装 HTTP/WS 路由。
 pub fn router(state: AppState) -> Router {
     Router::new()
@@ -88,7 +94,9 @@ async fn handle_socket(
     loop {
         match rx.recv().await {
             Ok(ev) => {
-                let Ok(json) = serde_json::to_string(&ev) else { continue };
+                let Ok(json) = serde_json::to_string(&ev) else {
+                    continue;
+                };
                 if socket.send(Message::Text(json)).await.is_err() {
                     break;
                 }

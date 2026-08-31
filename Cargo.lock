@@ -670,11 +670,13 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "futures-util",
  "pf-scene",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-tungstenite 0.23.1",
  "tracing",
  "tracing-subscriber",
 ]

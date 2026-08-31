@@ -11,11 +11,13 @@
 - [x] 设计文档落盘：docs/superpowers/specs/2026-08-31-pixel-forge-design.md
 - [x] rustup 安装（rsproxy.cn 镜像；crates.io 镜像见 ~/.cargo/config.toml）
 - [x] pf-hub 重构 lib+bin（集成测试可复用）+ WS 全链路集成测试已写
-- [ ] **卡点：系统缺 gcc（`sudo apt-get install -y build-essential pkg-config`，等用户执行）**
-- [ ] `cargo check` 全绿（注意：查输出用 pipefail，别让 tail 吃掉错误码）
-- [ ] `cargo test` 全绿（注册表差量 / 扫描器 fixture / 协议 roundtrip / WS 集成冒烟）
-- [ ] clippy + fmt
-- [ ] M0 收尾 commit + tag `v0.1.0-m0`
+- [x] 编译链打通：系统无 gcc → 用户态 zig cc（~/tools/zig-cc，CC + CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER）
+- [x] `cargo check` 全绿（注意：查输出用 pipefail，别让 tail 吃掉错误码）
+- [x] `cargo test` 全绿：7/7（注册表差量 3 / 扫描器 fixture 1 / 协议 roundtrip 2 / WS 集成冒烟 1）
+- [x] clippy 0 警告 + fmt 通过
+- [x] hub 二进制冒烟：假 /proc + 自定义端口，启动/监听//health/干净退出 OK
+- [x] M0 收尾 commit + tag `v0.1.0-m0`
+- [ ] 待用户：真终端里 `cargo run -p pf-hub` + `cargo run -p pf-tui`，开个 claude 进程看 worker 出现/消失（TUI 需要真实 TTY，无法自动化验证）
 
 ## M1 宿舍（M0 完成后开工）
 

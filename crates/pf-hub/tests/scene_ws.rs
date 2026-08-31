@@ -15,8 +15,16 @@ fn fake_proc(root: &Path, pid: u32, argv0: &str) {
     std::fs::write(d.join("cmdline"), format!("{argv0}\0-v\0").into_bytes()).unwrap();
 }
 
-async fn next_scene_event(ws: &mut tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>) -> SceneEvent {
-    let msg = ws.next().await.expect("ws 流不应结束").expect("ws 不应出错");
+async fn next_scene_event(
+    ws: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+) -> SceneEvent {
+    let msg = ws
+        .next()
+        .await
+        .expect("ws 流不应结束")
+        .expect("ws 不应出错");
     let text = msg.into_text().expect("场景事件必须是文本帧");
     serde_json::from_str(&text).expect("事件应能反序列化为 SceneEvent")
 }
@@ -64,7 +72,7 @@ async fn snapshot_upsert_gone_over_ws() -> anyhow::Result<()> {
     );
 
     // 3) 进程消失 → 广播 gone
-    std::fs::remove_dir_all(proc_root.path().join(100))?;
+    std::fs::remove_dir_all(proc_root.path().join("100"))?;
     let found = pf_hub::scanner::scan(proc_root.path());
     let events = state.registry.write().await.apply_discovered(found);
     assert_eq!(events.len(), 1, "只应有一条 gone");
