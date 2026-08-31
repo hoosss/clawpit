@@ -86,13 +86,12 @@ impl MailManager {
             if self.state.registry.read().await.get(to).is_none() {
                 anyhow::bail!("收件人不存在: {to}（用 pf_list 查车间成员）");
             }
-            // hub 宿主且活着 → 直接注入；否则入收件箱
+            // hub 宿主且活着 → 直接注入；外部 tmux 会话 → send-keys；否则入收件箱
+            let payload = format!("[from {}] {}", msg.from_name, msg.text);
             let injected = if self.spawn.is_alive(to) {
-                self.spawn
-                    .say(to, &format!("[from {}] {}", msg.from_name, msg.text))
-                    .is_ok()
+                self.spawn.say(to, &payload).is_ok()
             } else {
-                false
+                self.tmux_deliver(to, &payload).await
             };
             if !injected {
                 self.inboxes
@@ -118,6 +117,23 @@ impl MailManager {
             None => Vec::new(),
         };
         InboxResponse { agent, messages }
+    }
+
+    /// 外部会话注入：pid → tmux pane → send-keys（不在 tmux 里 = false）。
+    async fn tmux_deliver(&self, id: &str, text: &str) -> bool {
+        let Some(agent) = self.state.registry.read().await.get(id).cloned() else {
+            return false;
+        };
+        let pid = match agent.source {
+            pf_scene::Source::Discovered { pid } | pf_scene::Source::Spawned { pid } => pid,
+            _ => return false,
+        };
+        let proc_root = std::path::PathBuf::from(
+            std::env::var("PF_PROC_ROOT").unwrap_or_else(|_| "/proc".into()),
+        );
+        crate::tmux::pane_for_pid(&proc_root, pid)
+            .map(|pane| crate::tmux::send_text(&pane, text).is_ok())
+            .unwrap_or(false)
     }
 
     fn drain(&self, id: &str) -> Vec<ChatMessage> {

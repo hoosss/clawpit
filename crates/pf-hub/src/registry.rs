@@ -62,6 +62,20 @@ impl Registry {
             .cloned()
     }
 
+    /// 批量更新 Discovered 条目的状态（观察站产出），返回变更事件。
+    pub fn apply_states(&mut self, states: &[(String, AgentState)]) -> Vec<SceneEvent> {
+        let mut events = Vec::new();
+        for (id, st) in states {
+            if let Some(a) = self.agents.get_mut(id) {
+                if matches!(a.source, Source::Discovered { .. }) && a.state != *st {
+                    a.state = *st;
+                    events.push(SceneEvent::AgentUpsert { agent: a.clone() });
+                }
+            }
+        }
+        events
+    }
+
     /// 应用一轮扫描结果，返回需要广播的差量事件。
     pub fn apply_discovered(&mut self, found: Vec<ProcHit>) -> Vec<SceneEvent> {
         let mut events = Vec::new();

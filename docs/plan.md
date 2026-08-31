@@ -19,6 +19,15 @@
 - [x] M0 收尾 commit + tag `v0.1.0-m0`
 - [ ] 待用户：真终端里 `cargo run -p pf-hub` + `cargo run -p pf-tui`，开个 claude 进程看 worker 出现/消失（TUI 需要真实 TTY，无法自动化验证）
 
+## M3 观察站（✅ 完成，v0.4.0-m3）
+
+- [x] observe.rs 真实状态：fd 链接定位 + cwd→slug 推导（真机验证：claude 不保持 fd 打开，cwd 兜底是主路径）+ tail 8KB 事件解析（user=Thinking / tool_use=Working / end_turn=WaitingInput）
+- [x] 已知局限：同 cwd 并发多会话无法区分（都显示最新那份的状态）——记录在案，后续用进程启动时间对齐
+- [x] tmux.rs 外部注入：/proc 父链（PPid）匹配 pane shell → send-keys -l；tmux 缺失自动跳过
+- [x] 统一 say 路由：宿主写 stdin / 外部 tmux / 其余进收件箱（mail 与 /say、WS 同路）
+- [x] POST /agents/import：session id → claude --resume 招回历史会话
+- [x] 测试 21/21 + clippy 0 + **真机终验**（5 个运行中 claude：4 working / 1 waiting_input，实时准确）
+
 ## M2 邮局（✅ 完成，v0.3.0-m2）
 
 - [x] mail.rs 消息总线：活 worker 直接注入（[from X] 前缀）/ 外部或已退出进收件箱（取走即清）/ 发 human 只上墙
