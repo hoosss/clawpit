@@ -1,0 +1,11 @@
+[package]
+name = "pf-scene"
+version.workspace = true
+edition.workspace = true
+description = "pixel-forge 场景模型与线协议（hub 生产，TUI/Web 消费）"
+
+[dependencies]
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
