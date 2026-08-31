@@ -2,9 +2,11 @@
 //! bin 只负责环境变量解析与启动；库部分供集成测试复用。
 
 pub mod mail;
+pub mod observe;
 pub mod registry;
 pub mod scanner;
 pub mod spawn;
+pub mod tmux;
 
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
@@ -79,6 +81,7 @@ pub fn router(hub: Hub) -> Router {
         .route("/health", get(|| async { "ok" }))
         .route("/scene", get(scene_ws))
         .route("/agents", get(list_agents).post(spawn_agent))
+        .route("/agents/import", post(import_agent))
         .route("/agents/:id/say", post(say_agent))
         .route("/agents/:id", delete(stop_agent))
         .route("/msg", post(send_msg))
@@ -86,18 +89,64 @@ pub fn router(hub: Hub) -> Router {
         .with_state(hub)
 }
 
-/// 扫描循环：周期扫描 → 注册表差量 → 广播事件。
+/// 扫描循环：周期扫描 → 注册表差量 → 观察真实状态 → 广播事件。
 /// bin 用真实 /proc 与默认周期；测试直接调 registry 不经过这里。
-pub async fn discovery_loop(proc_root: PathBuf, state: AppState, interval: Duration) {
+pub async fn discovery_loop(
+    proc_root: PathBuf,
+    claude_home: PathBuf,
+    state: AppState,
+    interval: Duration,
+) {
     let mut tick = tokio::time::interval(interval);
     loop {
         tick.tick().await;
         let found = scanner::scan(&proc_root);
-        let events = state.registry.write().await.apply_discovered(found);
+        let mut reg = state.registry.write().await;
+        let mut events = reg.apply_discovered(found);
+        // 观察站：给 discovered 的 claude 会话读真实状态（transcript tail）
+        let states: Vec<(String, pf_scene::AgentState)> = reg
+            .snapshot()
+            .iter()
+            .filter_map(|a| match (a.provider, &a.source) {
+                (pf_scene::Provider::ClaudeCode, pf_scene::Source::Discovered { pid }) => Some((
+                    a.id.clone(),
+                    observe::read_state(&proc_root, *pid, &claude_home),
+                )),
+                _ => None,
+            })
+            .collect();
+        events.extend(reg.apply_states(&states));
+        drop(reg);
         for ev in events {
             let _ = state.tx.send(ev);
         }
     }
+}
+
+/// 对任意 agent 喊话：hub 宿主写 stdin；外部 agent 走 tmux send-keys。
+pub async fn say(hub: &Hub, id: &str, text: &str) -> anyhow::Result<()> {
+    if hub.spawn.is_alive(id) {
+        return hub.spawn.say(id, text);
+    }
+    let agent = hub
+        .state
+        .registry
+        .read()
+        .await
+        .get(id)
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("agent 不存在: {id}"))?;
+    let pid = match agent.source {
+        pf_scene::Source::Discovered { pid } | pf_scene::Source::Spawned { pid } => pid,
+        _ => anyhow::bail!("该来源不支持注入"),
+    };
+    let proc_root = PathBuf::from(std::env::var("PF_PROC_ROOT").unwrap_or_else(|_| "/proc".into()));
+    let pane = tmux::pane_for_pid(&proc_root, pid).ok_or_else(|| {
+        anyhow::anyhow!(
+            "{id} 不在 tmux 里，无法注入（外部会话需运行在 tmux 中，或用 pf_send 进收件箱）"
+        )
+    })?;
+    tmux::send_text(&pane, text)
 }
 
 async fn list_agents(State(hub): State<Hub>) -> Json<Vec<AgentInfo>> {
@@ -120,9 +169,33 @@ async fn say_agent(
     Path(id): Path<String>,
     Json(req): Json<SayRequest>,
 ) -> Result<&'static str, (StatusCode, String)> {
-    hub.spawn
-        .say(&id, &req.text)
+    say(&hub, &id, &req.text)
+        .await
         .map(|_| "ok")
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ImportRequest {
+    session_id: String,
+    #[serde(default)]
+    provider: Option<pf_scene::Provider>,
+}
+
+/// 手动导入：按 session id 把历史会话以 `claude --resume` 招进车间。
+async fn import_agent(
+    State(hub): State<Hub>,
+    Json(req): Json<ImportRequest>,
+) -> Result<Json<AgentInfo>, (StatusCode, String)> {
+    let provider = req.provider.unwrap_or(pf_scene::Provider::ClaudeCode);
+    hub.spawn
+        .spawn(SpawnRequest {
+            provider,
+            cwd: None,
+            argv: Some(vec!["claude".into(), "--resume".into(), req.session_id]),
+        })
+        .await
+        .map(Json)
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
 }
 
@@ -223,7 +296,7 @@ async fn handle_socket(socket: axum::extract::ws::WebSocket, hub: Hub, snapshot:
                 })
                 .await
                 .map(|_| ()),
-            ClientMessage::Say { id, text } => hub.spawn.say(&id, &text),
+            ClientMessage::Say { id, text } => say(&hub, &id, &text).await,
             ClientMessage::Stop { id } => hub.spawn.stop(&id).await,
         };
         if let Err(e) = result {

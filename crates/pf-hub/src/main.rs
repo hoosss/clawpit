@@ -21,10 +21,14 @@ async fn main() -> anyhow::Result<()> {
         .and_then(|p| p.parse().ok())
         .unwrap_or(DEFAULT_PORT);
     let proc_root = PathBuf::from(std::env::var("PF_PROC_ROOT").unwrap_or_else(|_| "/proc".into()));
+    let claude_home = PathBuf::from(
+        std::env::var("PF_CLAUDE_HOME").unwrap_or_else(|_| format!("{}/.claude", home_dir())),
+    );
 
     let hub = Hub::new();
     tokio::spawn(discovery_loop(
         proc_root,
+        claude_home,
         hub.state.clone(),
         DEFAULT_SCAN_INTERVAL,
     ));
@@ -34,4 +38,8 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("pixel-forge hub listening on ws://{addr}/scene");
     axum::serve(listener, router(hub)).await?;
     Ok(())
+}
+
+fn home_dir() -> String {
+    std::env::var("HOME").unwrap_or_else(|_| ".".into())
 }
