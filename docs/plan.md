@@ -9,19 +9,22 @@
 - [x] 仓库 init（main 分支）
 - [x] workspace 骨架：pf-scene / pf-hub / pf-tui
 - [x] 设计文档落盘：docs/superpowers/specs/2026-08-31-pixel-forge-design.md
-- [ ] rustup 安装完成（后台进行中）
-- [ ] `cargo check` 全绿（首次拉依赖较慢）
-- [ ] `cargo test` 全绿（注册表差量 / 扫描器 fixture / 协议 roundtrip）
-- [ ] 冒烟：起 hub，另开终端跑 `claude --version` 类进程（或临时伪造 PF_PROC_ROOT），TUI 能看到 worker 出现/消失
+- [x] rustup 安装（rsproxy.cn 镜像；crates.io 镜像见 ~/.cargo/config.toml）
+- [x] pf-hub 重构 lib+bin（集成测试可复用）+ WS 全链路集成测试已写
+- [ ] **卡点：系统缺 gcc（`sudo apt-get install -y build-essential pkg-config`，等用户执行）**
+- [ ] `cargo check` 全绿（注意：查输出用 pipefail，别让 tail 吃掉错误码）
+- [ ] `cargo test` 全绿（注册表差量 / 扫描器 fixture / 协议 roundtrip / WS 集成冒烟）
 - [ ] clippy + fmt
 - [ ] M0 收尾 commit + tag `v0.1.0-m0`
 
-## M1 宿舍（M0 完成后细化）
+## M1 宿舍（M0 完成后开工）
 
-- [ ] portable-pty 依赖引入 + SpawnDriver 骨架
-- [ ] spawn 配置（provider 命令行模板）
-- [ ] stdin 注入 API + TUI 选中 worker 输入
-- [ ] 生命周期（start/stop/restart）+ 状态映射 Working/Done
+- [ ] portable-pty 依赖引入 + SpawnDriver 骨架（实现 SessionDriver trait 的第二个实例）
+- [ ] SessionDriver trait 正式抽象（M0 的扫描逻辑收编为 ObserveDriver）
+- [ ] spawn 配置（provider 命令行模板，如 claude → `claude --no-session-persistence` 类启动参数）
+- [ ] stdin 注入 API（HTTP POST /agents/{id}/say + TUI 选中 worker 输入框）
+- [ ] 生命周期（start/stop/restart）+ 状态映射（进程活着=Working，退出码=Done/Error）
+- [ ] 验收：TUI 里 spawn 一只 claude worker，输入指令，看到它真的干活
 
 ## M2 邮局 / M3 观察站 / M4 Web / M5 桌面
 

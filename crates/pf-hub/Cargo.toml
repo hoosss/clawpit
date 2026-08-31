@@ -16,3 +16,5 @@ tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+tokio-tungstenite = { workspace = true }
+futures-util = { workspace = true }
