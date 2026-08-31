@@ -11,7 +11,7 @@ use std::{
 };
 
 use futures_util::{SinkExt, StreamExt};
-use pf_scene::{AgentInfo, AgentState, ClientMessage, Provider, SceneEvent};
+use pf_scene::{AgentInfo, AgentState, ChatMessage, ClientMessage, Provider, SceneEvent};
 use ratatui::{
     backend::CrosstermBackend,
     crossterm::{
@@ -44,6 +44,8 @@ struct Ui {
     selected: usize,
     mode: Mode,
     status: String,
+    /// 车间对话（最近 50 条，气泡墙）
+    messages: Vec<ChatMessage>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -54,6 +56,7 @@ fn main() -> anyhow::Result<()> {
         selected: 0,
         mode: Mode::Normal,
         status: "connecting…".into(),
+        messages: Vec::new(),
     }));
     // 控制面出口：键盘事件 → ClientMessage → WS 上行
     let (ctrl_tx, ctrl_rx) = std::sync::mpsc::channel::<ClientMessage>();
@@ -125,6 +128,13 @@ fn apply_event(ui: &Arc<Mutex<Ui>>, ev: SceneEvent) {
             u.agents.retain(|a| a.id != id);
             if u.selected >= u.agents.len() {
                 u.selected = u.agents.len().saturating_sub(1);
+            }
+        }
+        SceneEvent::Chat { message } => {
+            u.messages.push(message);
+            let len = u.messages.len();
+            if len > 50 {
+                u.messages.drain(..len - 50);
             }
         }
     }
@@ -212,8 +222,9 @@ fn run(
 }
 
 fn draw(f: &mut ratatui::Frame, u: &Ui) {
-    let [main, input, bottom] = Layout::vertical([
-        Constraint::Min(0),
+    let [main, chat, input, bottom] = Layout::vertical([
+        Constraint::Min(6),
+        Constraint::Length(8),
         Constraint::Length(1),
         Constraint::Length(1),
     ])
@@ -252,6 +263,26 @@ fn draw(f: &mut ratatui::Frame, u: &Ui) {
             .title(" pixel-forge · 车间 "),
     );
     f.render_widget(para, main);
+
+    // 消息墙：车间里最近的话（气泡）
+    let chat_lines: Vec<Line> = u
+        .messages
+        .iter()
+        .rev()
+        .take(6)
+        .map(|m| {
+            Line::from(vec![
+                Span::styled(
+                    format!("[{}→{}] ", m.from_name, m.to),
+                    Style::default().fg(Color::Cyan),
+                ),
+                Span::raw(m.text.clone()),
+            ])
+        })
+        .collect();
+    let chat_para = Paragraph::new(chat_lines)
+        .block(Block::default().borders(Borders::ALL).title(" 车间消息 "));
+    f.render_widget(chat_para, chat);
 
     // 输入行（喊话编辑区）
     let input_line = match &u.mode {

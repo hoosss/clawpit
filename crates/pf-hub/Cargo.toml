@@ -4,6 +4,14 @@ version.workspace = true
 edition.workspace = true
 description = "pixel-forge hub：本地 daemon——发现 agent、维护注册表、广播场景事件"
 
+[[bin]]
+name = "pf-hub"
+path = "src/main.rs"
+
+[[bin]]
+name = "pf-mcp"
+path = "src/bin/mcp.rs"
+
 [dependencies]
 pf-scene = { workspace = true }
 anyhow = { workspace = true }
