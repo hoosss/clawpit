@@ -1,8 +1,10 @@
 # pixel-forge
 
-> 工作名，正式名字待定 · Rust · MIT/Apache-2.0 待定
+> 工作名，正式名字待定 · Rust · MIT OR Apache-2.0
 
 本地运行的像素风 **agent 车间**：自动发现你机器上正在跑的 AI 编码 agent（Claude Code / Codex / Gemini / Aider / OpenCode），把它们变成车间里的像素工人。你看得到每只工人的状态，能点名下指令让它继续干活，agent 之间也能通过车间互相喊话。
+
+**English** — A pixel-art workshop for AI coding agents on your machine: auto-discovers running agent CLI sessions, renders them as pixel workers with live state (thinking/working/waiting), lets you hand them instructions (stdin injection for hosted workers, tmux send-keys for external ones), and relays agent-to-agent chat via a built-in MCP server (`pf-mcp`). One daemon, three frontends: TUI (ratatui), web canvas (embedded, zero build), and API.
 
 ```
 cargo run -p pf-hub    # 终端 1：车间 daemon（默认 ws://127.0.0.1:7664/scene）
