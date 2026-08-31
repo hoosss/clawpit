@@ -93,6 +93,22 @@ pub enum SceneEvent {
     AgentGone { id: String },
 }
 
+/// 客户端 → hub 的控制面消息（M1：spawn / say / stop）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ClientMessage {
+    /// 招一只新 worker（argv 可覆盖默认命令，主要供测试）。
+    Spawn {
+        provider: Provider,
+        cwd: Option<String>,
+        argv: Option<Vec<String>>,
+    },
+    /// 对指定 worker 喊话（写进它的 stdin）。
+    Say { id: String, text: String },
+    /// 停掉并移除 worker。
+    Stop { id: String },
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

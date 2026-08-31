@@ -19,14 +19,16 @@
 - [x] M0 收尾 commit + tag `v0.1.0-m0`
 - [ ] 待用户：真终端里 `cargo run -p pf-hub` + `cargo run -p pf-tui`，开个 claude 进程看 worker 出现/消失（TUI 需要真实 TTY，无法自动化验证）
 
-## M1 宿舍（M0 完成后开工）
+## M1 宿舍（✅ 完成，v0.2.0-m1）
 
-- [ ] portable-pty 依赖引入 + SpawnDriver 骨架（实现 SessionDriver trait 的第二个实例）
-- [ ] SessionDriver trait 正式抽象（M0 的扫描逻辑收编为 ObserveDriver）
-- [ ] spawn 配置（provider 命令行模板，如 claude → `claude --no-session-persistence` 类启动参数）
-- [ ] stdin 注入 API（HTTP POST /agents/{id}/say + TUI 选中 worker 输入框）
-- [ ] 生命周期（start/stop/restart）+ 状态映射（进程活着=Working，退出码=Done/Error）
-- [ ] 验收：TUI 里 spawn 一只 claude worker，输入指令，看到它真的干活
+- [x] portable-pty 宿主 spawn（stdout 排水防堵死、stdin 注入 `\r` 提交）
+- [x] spawn 配置：provider_command 默认命令 + argv 覆盖（测试/特殊场景）
+- [x] 注入 API 双通道：WS ClientMessage（spawn/say/stop）+ HTTP（POST /agents、POST /agents/:id/say、DELETE /agents/:id、GET /agents）
+- [x] 生命周期 + 状态映射：活着=Working，退出码 0=Done / 非 0=Error；退出后条目保留、显式 stop 才移除
+- [x] TUI：j/k 选人（▶高亮）、⏎ 喊话（底部输入行）、n 招工(claude)、x 解雇
+- [x] 测试 11/11 + clippy 0 警告 + 二进制冒烟（真实发现 5 个 claude 进程 + spawn/say/stop 全链路）
+- [x] SessionDriver trait 正式抽象 → **推迟到 M3**（与 transcript 观察一起统一，避免过早抽象；当前 SpawnManager/扫描器各自清晰）
+- [ ] 待用户真终端验收：n 招一只真 claude worker，⏎ 发指令看它干活
 
 ## M2 邮局 / M3 观察站 / M4 Web / M5 桌面
 

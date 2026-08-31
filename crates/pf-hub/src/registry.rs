@@ -28,6 +28,29 @@ impl Registry {
         v
     }
 
+    /// 供 Spawn/Post/Mailbox driver 直接增改自己来源的条目。
+    pub fn upsert(&mut self, agent: AgentInfo) {
+        self.agents.insert(agent.id.clone(), agent);
+    }
+
+    pub fn remove(&mut self, id: &str) {
+        self.agents.remove(id);
+    }
+
+    /// 更新状态，返回条目是否存在。
+    pub fn set_state(&mut self, id: &str, state: AgentState) -> bool {
+        if let Some(a) = self.agents.get_mut(id) {
+            a.state = state;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn get(&self, id: &str) -> Option<&AgentInfo> {
+        self.agents.get(id)
+    }
+
     /// 应用一轮扫描结果，返回需要广播的差量事件。
     pub fn apply_discovered(&mut self, found: Vec<ProcHit>) -> Vec<SceneEvent> {
         let mut events = Vec::new();

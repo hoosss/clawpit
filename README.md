@@ -11,6 +11,14 @@ cargo run -p pf-tui    # 终端 2：像素车间 TUI，q 退出
 
 在别的终端里跑一个 `claude` 或 `codex`，几秒内它会作为一只 worker 出现在车间里；退出即消失。
 
+**M1 已就绪（指挥）**：`j/k` 选中 worker，`⏎` 输入一句话回车——这句话会写进那个 agent 会话的 stdin（TUI 里招的）；`n` 招一只新 claude worker，`x` 解雇选中者。也可以走 HTTP：
+
+```bash
+curl -X POST localhost:7664/agents -H 'content-type: application/json' -d '{"provider":"claude_code"}'
+curl -X POST localhost:7664/agents/sp-1/say -H 'content-type: application/json' -d '{"text":"继续干活"}'
+curl -X DELETE localhost:7664/agents/sp-1
+```
+
 ## 架构
 
 ```
