@@ -1,7 +1,17 @@
 # 实施计划（loop tick 从这里续作）
 
 > 规则：每个 `/loop` tick 按下面的清单继续；做完一项勾一项并 commit。
-> 顺序执行，不要跳站。M0 完成后在此文件追加 M1 细化清单。
+> **2026-08-31：M0-M5 代码工作全部完成，循环已停（剩余事项需用户决策，见 M5）。**
+
+## M5 桌面+社区（代码工作 ✅ 完成，v0.5.0-m5）
+
+- [x] 开源硬化：LICENSE-MIT + LICENSE-APACHE（双协议）、Cargo 元数据（license/description/version 0.5.0）
+- [x] CI：GitHub Actions（fmt + clippy -D warnings + test）
+- [x] CONTRIBUTING.md（环境/结构/约定/provider 适配指南）
+- [x] README 双语化
+- [ ] **等用户**：① 正式项目名（现工作名 pixel-forge）② 确认双协议 ③ GitHub 建仓发布（`git remote add` + push 需你操作或授权）
+- [ ] Tauri 桌面壳：Web 端已内嵌，桌面化价值边际较低且需 npm 工具链——**建议降级为按需项**，想要再说
+- [ ] crates.io 发布：等定名后 `cargo publish`（工作名下发布不可逆，绝不先斩后奏）
 
 ## M0 地基
 
