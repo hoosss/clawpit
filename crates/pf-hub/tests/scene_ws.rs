@@ -4,7 +4,7 @@
 use std::path::Path;
 
 use futures_util::StreamExt;
-use pf_hub::{router, AppState};
+use pf_hub::{router, Hub};
 use pf_scene::{Provider, SceneEvent};
 use tokio::net::TcpListener;
 use tokio_tungstenite::connect_async;
@@ -35,15 +35,15 @@ async fn snapshot_upsert_gone_over_ws() -> anyhow::Result<()> {
     fake_proc(proc_root.path(), 1, "/usr/bin/sleep");
     fake_proc(proc_root.path(), 42, "/home/u/.nvm/bin/claude");
 
-    let state = AppState::new();
+    let hub = Hub::new();
     // 第一轮扫描：两个进程，只有 claude 命中
     let found = pf_hub::scanner::scan(proc_root.path());
-    state.registry.write().await.apply_discovered(found);
+    hub.state.registry.write().await.apply_discovered(found);
 
     // 起 hub（随机端口）
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;
-    let app = router(state.clone());
+    let app = router(hub.clone());
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
     let (mut ws, _) = connect_async(format!("ws://{addr}/scene")).await?;
@@ -60,10 +60,10 @@ async fn snapshot_upsert_gone_over_ws() -> anyhow::Result<()> {
     // 2) 新 agent 进程出现 → 广播 upsert
     fake_proc(proc_root.path(), 100, "codex");
     let found = pf_hub::scanner::scan(proc_root.path());
-    let events = state.registry.write().await.apply_discovered(found);
+    let events = hub.state.registry.write().await.apply_discovered(found);
     assert_eq!(events.len(), 1, "只应有一条 upsert");
     for ev in events {
-        let _ = state.tx.send(ev);
+        let _ = hub.state.tx.send(ev);
     }
     let ev = next_scene_event(&mut ws).await;
     assert!(
@@ -74,10 +74,10 @@ async fn snapshot_upsert_gone_over_ws() -> anyhow::Result<()> {
     // 3) 进程消失 → 广播 gone
     std::fs::remove_dir_all(proc_root.path().join("100"))?;
     let found = pf_hub::scanner::scan(proc_root.path());
-    let events = state.registry.write().await.apply_discovered(found);
+    let events = hub.state.registry.write().await.apply_discovered(found);
     assert_eq!(events.len(), 1, "只应有一条 gone");
     for ev in events {
-        let _ = state.tx.send(ev);
+        let _ = hub.state.tx.send(ev);
     }
     let ev = next_scene_event(&mut ws).await;
     assert!(

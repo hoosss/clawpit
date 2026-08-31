@@ -2,7 +2,7 @@
 
 use std::{net::SocketAddr, path::PathBuf};
 
-use pf_hub::{discovery_loop, router, AppState, DEFAULT_PORT, DEFAULT_SCAN_INTERVAL};
+use pf_hub::{discovery_loop, router, Hub, DEFAULT_PORT, DEFAULT_SCAN_INTERVAL};
 
 /// 环境变量：
 /// - `PF_PORT`：监听端口，默认 7664
@@ -22,16 +22,16 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or(DEFAULT_PORT);
     let proc_root = PathBuf::from(std::env::var("PF_PROC_ROOT").unwrap_or_else(|_| "/proc".into()));
 
-    let state = AppState::new();
+    let hub = Hub::new();
     tokio::spawn(discovery_loop(
         proc_root,
-        state.clone(),
+        hub.state.clone(),
         DEFAULT_SCAN_INTERVAL,
     ));
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!("pixel-forge hub listening on ws://{addr}/scene");
-    axum::serve(listener, router(state)).await?;
+    axum::serve(listener, router(hub)).await?;
     Ok(())
 }
