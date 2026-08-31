@@ -51,6 +51,17 @@ impl Registry {
         self.agents.get(id)
     }
 
+    /// 按进程 pid 找 agent（discovered/spawned 都带 pid），供 MCP 身份匹配。
+    pub fn find_by_pid(&self, pid: u32) -> Option<AgentInfo> {
+        self.agents
+            .values()
+            .find(|a| match a.source {
+                Source::Discovered { pid: p } | Source::Spawned { pid: p } => p == pid,
+                _ => false,
+            })
+            .cloned()
+    }
+
     /// 应用一轮扫描结果，返回需要广播的差量事件。
     pub fn apply_discovered(&mut self, found: Vec<ProcHit>) -> Vec<SceneEvent> {
         let mut events = Vec::new();
@@ -130,7 +141,7 @@ mod tests {
                 provider: Provider::ClaudeCode,
                 name: "cc-999".into(),
                 state: AgentState::Unknown,
-                source: Source::Spawned,
+                source: Source::Spawned { pid: 999 },
             },
         );
         let events = reg.apply_discovered(vec![]);

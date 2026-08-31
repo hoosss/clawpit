@@ -1,6 +1,7 @@
 //! pf-hub 库：注册表 + 扫描器 + 宿舍（spawn）+ WS 路由组装。
 //! bin 只负责环境变量解析与启动；库部分供集成测试复用。
 
+pub mod mail;
 pub mod registry;
 pub mod scanner;
 pub mod spawn;
@@ -8,16 +9,18 @@ pub mod spawn;
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use axum::{
-    extract::{Path, State, WebSocketUpgrade},
+    extract::{Path, Query, State, WebSocketUpgrade},
     http::StatusCode,
     response::Response,
     routing::{delete, get, post},
     Json, Router,
 };
-use pf_scene::{AgentInfo, SceneEvent};
+use pf_scene::{AgentInfo, ChatMessage, SceneEvent};
 use registry::Registry;
 use spawn::{SayRequest, SpawnManager, SpawnRequest};
 use tokio::sync::{broadcast, RwLock};
+
+use mail::{InboxResponse, MailManager};
 
 /// 默认监听端口。
 pub const DEFAULT_PORT: u16 = 7664;
@@ -52,15 +55,15 @@ impl Default for AppState {
 pub struct Hub {
     pub state: AppState,
     pub spawn: Arc<SpawnManager>,
+    pub mail: Arc<MailManager>,
 }
 
 impl Hub {
     pub fn new() -> Self {
         let state = AppState::new();
-        Self {
-            spawn: SpawnManager::new(state.clone()),
-            state,
-        }
+        let spawn = SpawnManager::new(state.clone());
+        let mail = MailManager::new(state.clone(), spawn.clone());
+        Self { mail, spawn, state }
     }
 }
 
@@ -78,6 +81,8 @@ pub fn router(hub: Hub) -> Router {
         .route("/agents", get(list_agents).post(spawn_agent))
         .route("/agents/:id/say", post(say_agent))
         .route("/agents/:id", delete(stop_agent))
+        .route("/msg", post(send_msg))
+        .route("/inbox", get(inbox))
         .with_state(hub)
 }
 
@@ -130,6 +135,26 @@ async fn stop_agent(
         .await
         .map(|_| "ok")
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct InboxQuery {
+    pid: u32,
+}
+
+async fn send_msg(
+    State(hub): State<Hub>,
+    Json(req): Json<mail::SendRequest>,
+) -> Result<Json<ChatMessage>, (StatusCode, String)> {
+    hub.mail
+        .send(req.from_pid, &req.to, &req.text)
+        .await
+        .map(Json)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+}
+
+async fn inbox(State(hub): State<Hub>, Query(q): Query<InboxQuery>) -> Json<InboxResponse> {
+    Json(hub.mail.inbox_for_pid(q.pid).await)
 }
 
 async fn scene_ws(State(hub): State<Hub>, ws: WebSocketUpgrade) -> Response {

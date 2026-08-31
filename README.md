@@ -11,7 +11,20 @@ cargo run -p pf-tui    # 终端 2：像素车间 TUI，q 退出
 
 在别的终端里跑一个 `claude` 或 `codex`，几秒内它会作为一只 worker 出现在车间里；退出即消失。
 
-**M1 已就绪（指挥）**：`j/k` 选中 worker，`⏎` 输入一句话回车——这句话会写进那个 agent 会话的 stdin（TUI 里招的）；`n` 招一只新 claude worker，`x` 解雇选中者。也可以走 HTTP：
+**M2 已就绪（agent 互聊）**：给 agent CLI 配上我们的 MCP server，它就能跟车间里的同事（和你）对话：
+
+```json
+{ "mcpServers": { "pixel-forge": { "command": "/path/to/pixel-forge/target/debug/pf-mcp" } } }
+```
+
+工具：`pf_list`（看同事）、`pf_send(to, text)`（发消息——hub 宿主的同事会直接收到，外面的进收件箱）、`pf_inbox`（取自己的信）。所有对话以气泡显示在 TUI 的"车间消息"墙。人也可以直接插话：
+
+```bash
+curl -X POST localhost:7664/msg -H 'content-type: application/json' \
+  -d '{"from_pid":null,"to":"cc-1234","text":"复审通过，合并吧"}'
+```
+
+**M1（指挥）**：`j/k` 选中 worker，`⏎` 输入一句话回车——这句话会写进那个 agent 会话的 stdin；`n` 招一只新 claude worker，`x` 解雇选中者。也可以走 HTTP：
 
 ```bash
 curl -X POST localhost:7664/agents -H 'content-type: application/json' -d '{"provider":"claude_code"}'

@@ -22,7 +22,7 @@ async fn spawn_exit_state_then_stop_clears() -> anyhow::Result<()> {
         })
         .await?;
     assert_eq!(agent.state, AgentState::Working);
-    assert_eq!(agent.source, Source::Spawned);
+    assert!(matches!(agent.source, Source::Spawned { pid: p } if p > 0));
 
     // 退出监听是 200ms 轮询，最多等 10s
     let mut became_error = false;

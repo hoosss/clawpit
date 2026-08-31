@@ -19,6 +19,16 @@
 - [x] M0 收尾 commit + tag `v0.1.0-m0`
 - [ ] 待用户：真终端里 `cargo run -p pf-hub` + `cargo run -p pf-tui`，开个 claude 进程看 worker 出现/消失（TUI 需要真实 TTY，无法自动化验证）
 
+## M2 邮局（✅ 完成，v0.3.0-m2）
+
+- [x] mail.rs 消息总线：活 worker 直接注入（[from X] 前缀）/ 外部或已退出进收件箱（取走即清）/ 发 human 只上墙
+- [x] pf-mcp 二进制：手写 MCP stdio 协议（ndjson JSON-RPC，零新依赖），pf_list/pf_send/pf_inbox 三工具，父 pid 自报身份（discovered/spawned 通吃）
+- [x] 协议：ChatMessage + SceneEvent::Chat（气泡）；Source::Spawned 携带 pid
+- [x] API：POST /msg、GET /inbox?pid=
+- [x] TUI：车间消息墙（最近气泡）
+- [x] 测试 16/16 + clippy 0 警告 + MCP 真协议冒烟（initialize/tools/call 全通过）
+- [ ] 待用户：给 claude 配 MCP（`{"mcpServers":{"pixel-forge":{"command":"<path>/pf-mcp"}}}`）后让两只 agent 互发消息真实验收
+
 ## M1 宿舍（✅ 完成，v0.2.0-m1）
 
 - [x] portable-pty 宿主 spawn（stdout 排水防堵死、stdin 注入 `\r` 提交）

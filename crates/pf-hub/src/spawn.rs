@@ -85,6 +85,7 @@ impl SpawnManager {
         let pty = portable_pty::native_pty_system();
         let pair = pty.openpty(portable_pty::PtySize::default())?;
         let child = pair.slave.spawn_command(cmd)?;
+        let child_pid = child.process_id().unwrap_or(0);
         let writer = pair.master.take_writer()?;
         let reader = pair.master.try_clone_reader()?;
 
@@ -100,7 +101,7 @@ impl SpawnManager {
             provider: req.provider,
             name: id.clone(),
             state: AgentState::Working,
-            source: Source::Spawned,
+            source: Source::Spawned { pid: child_pid },
         };
         {
             let child = Arc::new(Mutex::new(child));
@@ -148,6 +149,11 @@ impl SpawnManager {
         s.writer.write_all(b"\r")?;
         s.writer.flush()?;
         Ok(())
+    }
+
+    /// worker 是否还活着（会话仍在 = 可注入）。
+    pub fn is_alive(&self, id: &str) -> bool {
+        self.sessions.lock().unwrap().contains_key(id)
     }
 
     /// 停掉并移除 worker（对已退出的条目等于"清理"）。

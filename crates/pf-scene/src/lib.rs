@@ -63,12 +63,25 @@ pub enum AgentState {
 pub enum Source {
     /// 扫描发现的存量进程（M0）。
     Discovered { pid: u32 },
-    /// hub 自己 spawn 的（M1 宿舍）。
-    Spawned,
+    /// hub 自己 spawn 的（M1 宿舍），pid 供 MCP 身份匹配与消息路由。
+    Spawned { pid: u32 },
     /// agent 通过 MCP 主动注册的（M2 邮局）。
     Registered,
     /// 手动导入 session id（M3 观察站）。
     Imported,
+}
+
+/// 车间里的一句话（人→agent / agent→agent / agent→人）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatMessage {
+    pub id: String,
+    /// 发送者 agent id；来自终端的人为 "human"
+    pub from: String,
+    /// 显示名（human / cc-1234）
+    pub from_name: String,
+    /// 接收者 agent id；发给人的消息为 "human"（只上墙不投递）
+    pub to: String,
+    pub text: String,
 }
 
 /// 车间里的一只 worker。
@@ -91,6 +104,8 @@ pub enum SceneEvent {
     AgentUpsert { agent: AgentInfo },
     /// 消失。
     AgentGone { id: String },
+    /// 车间里的一句话（气泡上墙）。
+    Chat { message: ChatMessage },
 }
 
 /// 客户端 → hub 的控制面消息（M1：spawn / say / stop）。
