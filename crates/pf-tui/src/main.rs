@@ -30,8 +30,7 @@ type Term = Terminal<CrosstermBackend<Stdout>>;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let url = std::env::var("PF_TUI_URL")
-        .unwrap_or_else(|_| "ws://127.0.0.1:7664/scene".into());
+    let url = std::env::var("PF_TUI_URL").unwrap_or_else(|_| "ws://127.0.0.1:7664/scene".into());
 
     let agents: Arc<Mutex<Vec<AgentInfo>>> = Arc::new(Mutex::new(Vec::new()));
     let status = Arc::new(Mutex::new(String::from("connecting…")));
@@ -106,11 +105,13 @@ fn draw(f: &mut ratatui::Frame, agents: &Arc<Mutex<Vec<AgentInfo>>>, status: &Ar
     let list = agents.lock().unwrap().clone();
     let st = status.lock().unwrap().clone();
     let [main, bottom] =
-        Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(f.size());
+        Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(f.area());
 
     let mut lines: Vec<Line> = Vec::new();
     if list.is_empty() {
-        lines.push(Line::from("  车间空无一人…在别的终端里跑一个 claude/codex/gemini 试试"));
+        lines.push(Line::from(
+            "  车间空无一人…在别的终端里跑一个 claude/codex/gemini 试试",
+        ));
     }
     for a in &list {
         lines.push(Line::from(vec![
@@ -160,7 +161,7 @@ fn setup_terminal() -> io::Result<Term> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
-    Ok(Terminal::new(CrosstermBackend::new(stdout))?)
+    Terminal::new(CrosstermBackend::new(stdout))
 }
 
 fn restore_terminal(mut terminal: Term) -> io::Result<()> {

@@ -120,7 +120,10 @@ mod tests {
             },
         };
         let json = serde_json::to_string(&ev).unwrap();
-        assert!(json.contains("\"agent_upsert\""), "tag 应为 snake_case: {json}");
+        assert!(
+            json.contains("\"agent_upsert\""),
+            "tag 应为 snake_case: {json}"
+        );
         assert_eq!(serde_json::from_str::<SceneEvent>(&json).unwrap(), ev);
     }
 }

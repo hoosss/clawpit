@@ -9,6 +9,7 @@ use pf_scene::{AgentInfo, AgentState, SceneEvent, Source};
 
 use crate::scanner::ProcHit;
 
+#[derive(Default)]
 pub struct Registry {
     agents: HashMap<String, AgentInfo>,
 }
@@ -53,9 +54,7 @@ impl Registry {
         let gone: Vec<String> = self
             .agents
             .iter()
-            .filter(|(id, a)| {
-                matches!(a.source, Source::Discovered { .. }) && !seen.contains(*id)
-            })
+            .filter(|(id, a)| matches!(a.source, Source::Discovered { .. }) && !seen.contains(*id))
             .map(|(id, _)| id.clone())
             .collect();
         for id in gone {

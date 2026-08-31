@@ -28,11 +28,7 @@ pub fn scan(proc_root: &std::path::Path) -> Vec<ProcHit> {
             continue;
         };
         // cmdline 以 \0 分隔，第一段是 argv[0]（可执行路径）
-        let Some(argv0) = cmdline
-            .split(|&b| b == 0)
-            .next()
-            .filter(|s| !s.is_empty())
-        else {
+        let Some(argv0) = cmdline.split(|&b| b == 0).next().filter(|s| !s.is_empty()) else {
             continue;
         };
         let argv0 = String::from_utf8_lossy(argv0);
@@ -64,9 +60,12 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("irq")).unwrap();
 
         let hits = scan(dir.path());
-        let pids: Vec<u32> = hits.iter().map(|h| h.pid).collect();
+        // read_dir 顺序不保证，排序后再断言（扫描器本身无序，注册表快照时才排序）
+        let mut pids: Vec<u32> = hits.iter().map(|h| h.pid).collect();
+        pids.sort_unstable();
         assert_eq!(pids, vec![42, 100]);
-        assert_eq!(hits[0].provider, Provider::ClaudeCode);
-        assert_eq!(hits[1].provider, Provider::Codex);
+        let provider_of = |pid: u32| hits.iter().find(|h| h.pid == pid).unwrap().provider;
+        assert_eq!(provider_of(42), Provider::ClaudeCode);
+        assert_eq!(provider_of(100), Provider::Codex);
     }
 }
