@@ -75,9 +75,13 @@ impl Default for Hub {
     }
 }
 
+/// Web 车间（单文件像素客户端，编译期内嵌，零构建）。
+const INDEX_HTML: &str = include_str!("../../../pf-web/index.html");
+
 /// 组装 HTTP/WS 路由。
 pub fn router(hub: Hub) -> Router {
     Router::new()
+        .route("/", get(|| async { axum::response::Html(INDEX_HTML) }))
         .route("/health", get(|| async { "ok" }))
         .route("/scene", get(scene_ws))
         .route("/agents", get(list_agents).post(spawn_agent))

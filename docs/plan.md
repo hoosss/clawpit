@@ -19,6 +19,15 @@
 - [x] M0 收尾 commit + tag `v0.1.0-m0`
 - [ ] 待用户：真终端里 `cargo run -p pf-hub` + `cargo run -p pf-tui`，开个 claude 进程看 worker 出现/消失（TUI 需要真实 TTY，无法自动化验证）
 
+## M4 Web 像素车间（✅ 代码完成，v0.5.0-m4）
+
+- [x] pf-web/index.html：单文件零构建 canvas 客户端（vanilla JS，编译期内嵌进 hub，`cargo run -p pf-hub` 后浏览器开 http://localhost:7664 即用）
+- [x] 像素感：480x270 低分辨率画布 + CSS pixelated 放大；工人 = 程序化 16px 小人（provider 配色安全帽、干活时挥手弹跳、睡觉 zZ、出错 X!）
+- [x] 同一 WS 场景协议；点击画布/列表选人、说话（POST /msg，气泡上墙+接收者连线）、招工、解雇
+- [x] Vue3 工程化（vite）明确推迟：UI 复杂后再迁移，单文件当前最优（YAGNI）
+- [x] JS 语法校验通过；hub 实测在服
+- [ ] 待用户：Windows 浏览器打开 http://localhost:7664 视觉验收（WSL2 localhost 自动转发）；自动化浏览器验证被系统缺 libnss3 挡住（与 gcc 同一堵 sudo 墙）
+
 ## M3 观察站（✅ 完成，v0.4.0-m3）
 
 - [x] observe.rs 真实状态：fd 链接定位 + cwd→slug 推导（真机验证：claude 不保持 fd 打开，cwd 兜底是主路径）+ tail 8KB 事件解析（user=Thinking / tool_use=Working / end_turn=WaitingInput）
