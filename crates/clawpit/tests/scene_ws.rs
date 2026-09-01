@@ -87,3 +87,42 @@ async fn snapshot_upsert_gone_over_ws() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+/// Lagged 自愈：客户端停止读取、广播通道（容量 64）被打爆后，
+/// 服务端 send_task 应检测 RecvError::Lagged 并补发全量 Snapshot，
+/// 客户端恢复读取时必须能收到第二份 Snapshot（非首帧位置）。
+#[tokio::test]
+async fn lagged_client_gets_snapshot_resync() -> anyhow::Result<()> {
+    let hub = Hub::new();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    let app = router(hub.clone());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let (mut ws, _) = connect_async(format!("ws://{addr}/scene")).await?;
+
+    // 洪水：3000 条 chat（to=human 不入收件箱，纯广播），客户端故意不读 →
+    // TCP 缓冲吃满后 send_task 的 rx 必然 Lagged
+    for i in 0..3000 {
+        hub.mail
+            .send(None, "human", &format!("洪水第 {i} 波"))
+            .await?;
+    }
+    // 给服务端一点时间打满背压
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    // 恢复读取：10s 内必须出现第二份 Snapshot（首帧是连接时的初始快照）
+    let mut snapshots = 0;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while std::time::Instant::now() < deadline && snapshots < 2 {
+        let ev = tokio::time::timeout(std::time::Duration::from_secs(2), next_scene_event(&mut ws))
+            .await?;
+        if matches!(ev, SceneEvent::Snapshot { .. }) {
+            snapshots += 1;
+        }
+    }
+    assert!(
+        snapshots >= 2,
+        "Lagged 后应补发快照，实际收到 {snapshots} 份"
+    );
+    Ok(())
+}
