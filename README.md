@@ -1,58 +1,106 @@
+<div align="center">
+
 # clawpit
 
-> 工作名，正式名字待定 · Rust · MIT OR Apache-2.0
+**像素风本地 agent 车间 —— 发现、指挥、对话你机器上的 AI 编码 agent**
 
-本地运行的像素风 **agent 车间**：自动发现你机器上正在跑的 AI 编码 agent（Claude Code / Codex / Gemini / Aider / OpenCode），把它们变成车间里的像素工人。你看得到每只工人的状态，能点名下指令让它继续干活，agent 之间也能通过车间互相喊话。
+*A pixel-art pit crew for the AI coding agents already running on your machine.*
 
-**English** — A pixel-art workshop for AI coding agents on your machine: auto-discovers running agent CLI sessions, renders them as pixel workers with live state (thinking/working/waiting), lets you hand them instructions (stdin injection for hosted workers, tmux send-keys for external ones), and relays agent-to-agent chat via a built-in MCP server (`clawpit-mcp`). One daemon, three frontends: TUI (ratatui), web canvas (embedded, zero build), and API.
+[![CI](https://github.com/hoosss/clawpit/actions/workflows/ci.yml/badge.svg)](https://github.com/hoosss/clawpit/actions/workflows/ci.yml)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+[![Rust](https://img.shields.io/badge/rust-stable-b7410e.svg)](https://www.rust-lang.org)
 
+![demo](docs/demo.gif)
+
+*画面里全是真实事件：紫色小人 = 正在运行的 Claude Code 会话（⚒=干活 / zZ=等输入），灰色的 sp-1 是演示中现场招的新 worker，白气泡是真实投递的消息。*
+
+</div>
+
+---
+
+## 它解决什么问题
+
+你开着好几个终端跑 Claude Code / Codex / Gemini，但它们互相看不见、你也没法一眼看清谁在干嘛。clawpit 是一个本地 daemon：
+
+| 能力 | 说明 |
+|------|------|
+| 🔍 **发现** | 自动感知本机正在运行的 agent 会话（/proc 扫描），手动按 session id 导入历史会话也行 |
+| 👁 **观察** | 解析 Claude Code transcript 推断**真实状态**：在想 / 在调工具 / 在等你说话 |
+| 🗣 **指挥** | 对任意 agent 喊一句话——hub 宿主的写 stdin，外部 tmux 会话走 send-keys，真身继续干活 |
+| 💬 **中转** | agent 之间通过内置 MCP server 互相发消息（reviewer↔fixer 闭环的地基），对话以气泡上墙 |
+| 🖥 **三端** | TUI（ratatui）· Web 像素车间（浏览器开箱即用）· HTTP API，同一套场景协议 |
+
+## 快速开始
+
+```bash
+git clone https://github.com/hoosss/clawpit && cd clawpit
+cargo run -p clawpit      # 终端 1：daemon（TUI + Web + API 三合一）
+cargo run -p clawpit-tui  # 终端 2：像素车间，q 退出
 ```
-cargo run -p clawpit    # 终端 1：车间 daemon（默认 ws://127.0.0.1:7664/scene）
-cargo run -p clawpit-tui    # 终端 2：像素车间 TUI，q 退出
+
+浏览器打开 **http://localhost:7664** 就是上面的像素车间。在任意终端跑一个 `claude`，几秒内它会作为一只 worker 走进画面，退出即消失。
+
+**TUI 按键**：`j/k` 选人 · `⏎` 喊话 · `n` 招工 · `x` 解雇 · `q` 退出
+
+**HTTP**：
+
+```bash
+curl -X POST localhost:7664/agents -H 'content-type: application/json' \
+  -d '{"provider":"claude_code"}'                # 招一只 claude
+curl -X POST localhost:7664/agents/sp-1/say -H 'content-type: application/json' \
+  -d '{"text":"继续干活"}'                        # 对它喊话
+curl -X POST localhost:7664/msg -H 'content-type: application/json' \
+  -d '{"from_pid":null,"to":"cc-1234","text":"复审通过"}'   # 走邮局（带气泡）
 ```
 
-在别的终端里跑一个 `claude` 或 `codex`，几秒内它会作为一只 worker 出现在车间里；退出即消失。
+## 让 agent 互相聊天（MCP）
 
-**M2 已就绪（agent 互聊）**：给 agent CLI 配上我们的 MCP server，它就能跟车间里的同事（和你）对话：
+给你的 agent CLI 配一次 clawpit 的 MCP server，它就获得 `clawpit_list` / `clawpit_send` / `clawpit_inbox` 三个工具：
 
 ```json
-{ "mcpServers": { "clawpit": { "command": "/path/to/clawpit/target/debug/clawpit-mcp" } } }
+{
+  "mcpServers": {
+    "clawpit": { "command": "/path/to/clawpit/target/debug/clawpit-mcp" }
+  }
+}
 ```
 
-工具：`clawpit_list`（看同事）、`clawpit_send(to, text)`（发消息——hub 宿主的同事会直接收到，外面的进收件箱）、`clawpit_inbox`（取自己的信）。所有对话以气泡显示在 TUI 的"车间消息"墙。人也可以直接插话：
-
-```bash
-curl -X POST localhost:7664/msg -H 'content-type: application/json' \
-  -d '{"from_pid":null,"to":"cc-1234","text":"复审通过，合并吧"}'
-```
-
-**M1（指挥）**：`j/k` 选中 worker，`⏎` 输入一句话回车——这句话会写进那个 agent 会话的 stdin；`n` 招一只新 claude worker，`x` 解雇选中者。也可以走 HTTP：
-
-```bash
-curl -X POST localhost:7664/agents -H 'content-type: application/json' -d '{"provider":"claude_code"}'
-curl -X POST localhost:7664/agents/sp-1/say -H 'content-type: application/json' -d '{"text":"继续干活"}'
-curl -X DELETE localhost:7664/agents/sp-1
-```
+身份零配置：MCP 进程用父 pid 自报——谁拉起我，我就是谁。之后 reviewer 完成后一句 `clawpit_send("fixer", "清单已出，开工")`，消息直接出现在对方会话里（或收件箱），气泡同时上墙。
 
 ## 架构
 
 ```
-clawpit-tui (ratatui) ─┐                       ┌─ Web (Vue3+canvas, 规划中)
-                  ├─ WS 场景协议(clawpit-scene) ┤
-                  └───────────────────────└─ Tauri 桌面 (规划中)
+clawpit-tui (ratatui) ─┐                      ┌─ HTTP API
+                      ├─ WS 场景协议 ─────────┤
+clawpit-web (canvas) ──┘  (clawpit-scene)     └─ clawpit-mcp (MCP server)
                               │
                         clawpit daemon
-              AgentRegistry · 广播 · 消息总线(规划中)
-                              │
-              SessionDriver: 观察站(扫描) · 宿舍(pty) · 邮局(MCP)
+        注册表 · 扫描器 · pty 宿主 · 消息总线 · tmux 桥 · 观察站
 ```
 
-- **观察站**：扫描 /proc 发现存量 agent 进程（当前）
-- **宿舍**：hub 自己 spawn 的 agent，stdin 注入指挥（下一步）
-- **邮局**：MCP 消息总线，agent 之间互相发指令（差异化核心）
+| crate | 职责 |
+|-------|------|
+| `clawpit-scene` | 场景模型与 WS 线协议（只增不改） |
+| `clawpit` | daemon：`clawpit`（hub）+ `clawpit-mcp`（MCP server）两个二进制 |
+| `clawpit-tui` | 终端渲染端 |
+| `clawpit-web/` | 单文件 canvas 像素车间，`include_str!` 编译期内嵌，零构建 |
 
-设计文档：`docs/superpowers/specs/2026-08-31-clawpit-design.md` · 路线图与进度：`docs/plan.md`
+注入路由：hub 宿主 → 写 stdin；外部会话在 tmux 里 → send-keys；其余 → 收件箱（取走即清）。
 
-## 状态
+## 路线图
 
-M0（地基）实施中。路线图：M0 地基 → M1 宿舍 → M2 邮局 → M3 观察站深化 → M4 Web → M5 桌面+社区。
+- [x] **M0** 发现 + 状态墙 + 场景协议
+- [x] **M1** pty 宿主 spawn + stdin 指挥
+- [x] **M2** MCP 消息总线，agent 互聊
+- [x] **M3** 真实状态解析（transcript）+ tmux 注入 + session 导入
+- [x] **M4** Web 像素车间
+- [x] **M5** 开源化（双协议 / CI / 贡献指南）
+- [ ] Tauri 桌面壳（按需）· crates.io 发布 · 更多 provider 的状态解析
+
+## 贡献
+
+见 [CONTRIBUTING.md](CONTRIBUTING.md)——包括新 provider 的适配三步法。
+
+## License
+
+MIT OR Apache-2.0，双协议任选，见 [LICENSE-MIT](LICENSE-MIT) / [LICENSE-APACHE](LICENSE-APACHE)。
