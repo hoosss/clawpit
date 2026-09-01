@@ -5,6 +5,8 @@
 //!   精确状态（Thinking/WaitingInput）依赖 transcript 解析，M3 观察站接入。
 //! - 注册表约定：Spawned 条目归本 driver 管；退出后保留（能看到结果），
 //!   显式 stop 才移除。
+//! - 顺序关键：spawn 先登记 Working 再启动退出监听——快退进程的终态
+//!   不能被 Working 覆盖；say 绝不持全局锁写 pty——对端不读会阻塞。
 
 use std::{
     collections::HashMap,
@@ -47,13 +49,13 @@ pub struct SayRequest {
 }
 
 struct Session {
-    child: Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>,
-    writer: Box<dyn Write + Send>,
+    child: Mutex<Box<dyn portable_pty::Child + Send + Sync>>,
+    writer: Mutex<Box<dyn Write + Send>>,
 }
 
 pub struct SpawnManager {
     state: AppState,
-    sessions: Mutex<HashMap<String, Session>>,
+    sessions: Mutex<HashMap<String, Arc<Session>>>,
     next: AtomicU64,
 }
 
@@ -66,7 +68,7 @@ impl SpawnManager {
         })
     }
 
-    /// 招一只 worker：pty spawn → 注册 → 广播 → 后台监听退出。
+    /// 招一只 worker：pty spawn → 登记 Working → 广播 → 最后启动退出监听。
     pub async fn spawn(self: &Arc<Self>, req: SpawnRequest) -> anyhow::Result<AgentInfo> {
         let n = self.next.fetch_add(1, Ordering::SeqCst);
         let id = format!("sp-{n}");
@@ -74,6 +76,7 @@ impl SpawnManager {
         let argv = req
             .argv
             .unwrap_or_else(|| vec![provider_command(req.provider).to_string()]);
+        anyhow::ensure!(!argv.is_empty() && !argv[0].is_empty(), "argv 不能为空");
         let mut cmd = portable_pty::CommandBuilder::new(&argv[0]);
         for a in &argv[1..] {
             cmd.arg(a);
@@ -103,51 +106,58 @@ impl SpawnManager {
             state: AgentState::Working,
             source: Source::Spawned { pid: child_pid },
         };
-        {
-            let child = Arc::new(Mutex::new(child));
-            self.sessions.lock().unwrap().insert(
-                id.clone(),
-                Session {
-                    child: child.clone(),
-                    writer,
-                },
-            );
-            // 退出监听：try_wait 轮询（短临界区，不与 kill 抢锁死等）
-            let mgr = self.clone();
-            let agent_id = id.clone();
-            tokio::spawn(async move {
-                loop {
-                    let exited = child.lock().unwrap().try_wait().ok().flatten();
-                    if let Some(status) = exited {
-                        let state = if status.success() {
-                            AgentState::Done
-                        } else {
-                            AgentState::Error
-                        };
-                        mgr.on_exit(&agent_id, state).await;
-                        break;
-                    }
-                    tokio::time::sleep(Duration::from_millis(200)).await;
-                }
-            });
-        }
 
+        let session = Arc::new(Session {
+            child: Mutex::new(child),
+            writer: Mutex::new(writer),
+        });
+        self.sessions
+            .lock()
+            .unwrap()
+            .insert(id.clone(), session.clone());
+
+        // ① 先登记 + 广播 Working（快退进程的终态必须落在其后）
         self.state.registry.write().await.upsert(agent.clone());
         let _ = self.state.tx.send(SceneEvent::AgentUpsert {
             agent: agent.clone(),
+        });
+
+        // ② 退出监听：try_wait 轮询（短临界区，不与 kill 抢锁死等）
+        let mgr = self.clone();
+        let agent_id = id.clone();
+        let watch = session;
+        tokio::spawn(async move {
+            loop {
+                let exited = watch.child.lock().unwrap().try_wait().ok().flatten();
+                if let Some(status) = exited {
+                    let state = if status.success() {
+                        AgentState::Done
+                    } else {
+                        AgentState::Error
+                    };
+                    mgr.on_exit(&agent_id, state).await;
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
         });
         Ok(agent)
     }
 
     /// 对 worker 喊话：写 stdin（pty 下 `\r` 即回车提交）。
+    /// 只取会话引用、不持全局 map 锁——对端不读 stdin 时也只堵这一个会话。
     pub fn say(&self, id: &str, text: &str) -> anyhow::Result<()> {
-        let mut map = self.sessions.lock().unwrap();
-        let s = map
-            .get_mut(id)
+        let session = self
+            .sessions
+            .lock()
+            .unwrap()
+            .get(id)
+            .cloned()
             .ok_or_else(|| anyhow::anyhow!("agent 不存在或已退出: {id}"))?;
-        s.writer.write_all(text.as_bytes())?;
-        s.writer.write_all(b"\r")?;
-        s.writer.flush()?;
+        let mut w = session.writer.lock().unwrap();
+        w.write_all(text.as_bytes())?;
+        w.write_all(b"\r")?;
+        w.flush()?;
         Ok(())
     }
 
@@ -157,7 +167,14 @@ impl SpawnManager {
     }
 
     /// 停掉并移除 worker（对已退出的条目等于"清理"）。
+    /// 只管 Spawned：外部发现的条目归扫描器，stop 了也会下轮复活（闪烁）。
     pub async fn stop(&self, id: &str) -> anyhow::Result<()> {
+        if let Some(a) = self.state.registry.read().await.get(id) {
+            anyhow::ensure!(
+                matches!(a.source, Source::Spawned { .. }),
+                "{id} 是外部发现的会话，关掉它的终端即可（扫描器 2s 内自动收编）"
+            );
+        }
         let sess = self.sessions.lock().unwrap().remove(id);
         if let Some(s) = sess {
             let _ = s.child.lock().unwrap().kill();

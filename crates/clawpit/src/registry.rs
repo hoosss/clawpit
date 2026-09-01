@@ -80,8 +80,20 @@ impl Registry {
     pub fn apply_discovered(&mut self, found: Vec<ProcHit>) -> Vec<SceneEvent> {
         let mut events = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
+        // hub 宿主（Spawned）的进程也在 /proc 里，扫描不得把它们重复登记成 cc-<pid> 双胞胎
+        let spawned_pids: HashSet<u32> = self
+            .agents
+            .values()
+            .filter_map(|a| match a.source {
+                Source::Spawned { pid } => Some(pid),
+                _ => None,
+            })
+            .collect();
 
         for hit in &found {
+            if spawned_pids.contains(&hit.pid) {
+                continue;
+            }
             let id = format!("{}-{}", hit.provider.short(), hit.pid);
             seen.insert(id.clone());
             let agent = AgentInfo {
@@ -161,5 +173,28 @@ mod tests {
         let events = reg.apply_discovered(vec![]);
         assert!(events.is_empty(), "Spawned 条目不归扫描管");
         assert_eq!(reg.snapshot().len(), 1);
+    }
+
+    #[test]
+    fn spawned_pid_not_double_registered_by_scan() {
+        let mut reg = Registry::new();
+        reg.agents.insert(
+            "sp-1".into(),
+            AgentInfo {
+                id: "sp-1".into(),
+                provider: Provider::ClaudeCode,
+                name: "sp-1".into(),
+                state: AgentState::Working,
+                source: Source::Spawned { pid: 4242 },
+            },
+        );
+        // 扫描器在同一 pid 上命中 claude → 不得生成 cc-4242 双胞胎
+        let events = reg.apply_discovered(vec![crate::scanner::ProcHit {
+            pid: 4242,
+            provider: Provider::ClaudeCode,
+        }]);
+        assert!(events.is_empty(), "宿主进程不重复登记");
+        assert!(reg.get("cc-4242").is_none());
+        assert!(reg.get("sp-1").is_some());
     }
 }

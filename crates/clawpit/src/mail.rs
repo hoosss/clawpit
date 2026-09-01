@@ -133,6 +133,10 @@ impl MailManager {
         let proc_root = std::path::PathBuf::from(
             std::env::var("CLAWPIT_PROC_ROOT").unwrap_or_else(|_| "/proc".into()),
         );
+        // pid 复用防线（与 lib::say 同规）
+        if !crate::tmux::pid_still_agent(&proc_root, pid, agent.provider) {
+            return false;
+        }
         crate::tmux::pane_for_pid(&proc_root, pid)
             .map(|pane| crate::tmux::send_text(&pane, text).is_ok())
             .unwrap_or(false)

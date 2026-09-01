@@ -56,6 +56,18 @@ pub fn pane_for_pid(proc_root: &Path, pid: u32) -> Option<String> {
     None
 }
 
+/// pid 复用防线：注入前复核该 pid 的 argv[0] 仍是指定 provider 的 CLI。
+/// 进程死了 pid 被系统复用成无关进程时，send-keys 会把字打进无辜终端——必须挡住。
+pub fn pid_still_agent(proc_root: &Path, pid: u32, provider: clawpit_scene::Provider) -> bool {
+    let Ok(cmdline) = std::fs::read(proc_root.join(pid.to_string()).join("cmdline")) else {
+        return false;
+    };
+    let Some(argv0) = cmdline.split(|&b| b == 0).next().filter(|s| !s.is_empty()) else {
+        return false;
+    };
+    clawpit_scene::Provider::detect(&String::from_utf8_lossy(argv0)) == Some(provider)
+}
+
 /// 向 pane 打字并回车（-l 逐字输入，防热键解释）。
 pub fn send_text(pane: &str, text: &str) -> anyhow::Result<()> {
     let st = std::process::Command::new("tmux")
@@ -72,6 +84,33 @@ pub fn send_text(pane: &str, text: &str) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pid_still_agent_checks_argv0() {
+        let dir = tempfile::tempdir().unwrap();
+        let mk = |pid: u32, argv0: &str| {
+            let d = dir.path().join(pid.to_string());
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("cmdline"), format!("{argv0}\0-v\0").into_bytes()).unwrap();
+        };
+        mk(1, "/nvm/bin/claude");
+        mk(2, "/usr/bin/vim"); // pid 被复用后的无辜进程
+        assert!(pid_still_agent(
+            dir.path(),
+            1,
+            clawpit_scene::Provider::ClaudeCode
+        ));
+        assert!(!pid_still_agent(
+            dir.path(),
+            2,
+            clawpit_scene::Provider::ClaudeCode
+        ));
+        assert!(!pid_still_agent(
+            dir.path(),
+            3,
+            clawpit_scene::Provider::ClaudeCode
+        )); // 已消失
+    }
 
     #[test]
     fn ancestors_walks_ppid_chain() {

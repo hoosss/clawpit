@@ -106,3 +106,75 @@ fn provider_default_commands() {
     assert_eq!(provider_command(Provider::ClaudeCode), "claude");
     assert_eq!(provider_command(Provider::Codex), "codex");
 }
+
+#[tokio::test]
+async fn empty_argv_rejected() {
+    let hub = Hub::new();
+    let empty = || SpawnRequest {
+        provider: Provider::Generic,
+        cwd: None,
+        argv: Some(vec![]),
+    };
+    let blank = || SpawnRequest {
+        provider: Provider::Generic,
+        cwd: None,
+        argv: Some(vec!["".into()]),
+    };
+    assert!(
+        hub.spawn.spawn(empty()).await.is_err(),
+        "空 argv 应被拒绝（原为 panic）"
+    );
+    assert!(
+        hub.spawn.spawn(blank()).await.is_err(),
+        "空 argv[0] 应被拒绝"
+    );
+}
+
+#[tokio::test]
+async fn stop_on_discovered_rejected() -> anyhow::Result<()> {
+    let hub = Hub::new();
+    let hit = clawpit::scanner::ProcHit {
+        pid: 4242,
+        provider: Provider::ClaudeCode,
+    };
+    hub.state.registry.write().await.apply_discovered(vec![hit]);
+    // 外部发现的条目归扫描器管，stop 只会制造 gone→复活闪烁
+    assert!(hub.spawn.stop("cc-4242").await.is_err());
+    assert!(hub.state.registry.read().await.get("cc-4242").is_some());
+    Ok(())
+}
+
+#[tokio::test]
+async fn fast_exit_still_registered_with_final_state() -> anyhow::Result<()> {
+    let hub = Hub::new();
+    // true 立即退出——upsert(Working) 必须先于退出监听，终态不能被 Working 覆盖
+    let agent = hub
+        .spawn
+        .spawn(SpawnRequest {
+            provider: Provider::Generic,
+            cwd: None,
+            argv: Some(vec!["true".into()]),
+        })
+        .await?;
+    assert!(
+        hub.state.registry.read().await.get(&agent.id).is_some(),
+        "spawn 返回时条目必须已登记"
+    );
+    let mut done = false;
+    for _ in 0..50 {
+        if hub
+            .state
+            .registry
+            .read()
+            .await
+            .get(&agent.id)
+            .is_some_and(|a| a.state == AgentState::Done)
+        {
+            done = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(done, "快退进程终态应为 Done 而非卡在 Working");
+    Ok(())
+}
