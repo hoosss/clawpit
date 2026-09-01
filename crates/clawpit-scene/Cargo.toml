@@ -1,8 +1,8 @@
 [package]
-name = "pf-scene"
+name = "clawpit-scene"
 version.workspace = true
 edition.workspace = true
-description = "pixel-forge 场景模型与线协议（hub 生产，TUI/Web 消费）"
+description = "clawpit 场景模型与线协议（hub 生产，TUI/Web 消费）"
 
 [dependencies]
 serde = { workspace = true }

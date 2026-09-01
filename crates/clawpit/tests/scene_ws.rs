@@ -3,9 +3,9 @@
 
 use std::path::Path;
 
+use clawpit::{router, Hub};
+use clawpit_scene::{Provider, SceneEvent};
 use futures_util::StreamExt;
-use pf_hub::{router, Hub};
-use pf_scene::{Provider, SceneEvent};
 use tokio::net::TcpListener;
 use tokio_tungstenite::connect_async;
 
@@ -37,7 +37,7 @@ async fn snapshot_upsert_gone_over_ws() -> anyhow::Result<()> {
 
     let hub = Hub::new();
     // 第一轮扫描：两个进程，只有 claude 命中
-    let found = pf_hub::scanner::scan(proc_root.path());
+    let found = clawpit::scanner::scan(proc_root.path());
     hub.state.registry.write().await.apply_discovered(found);
 
     // 起 hub（随机端口）
@@ -59,7 +59,7 @@ async fn snapshot_upsert_gone_over_ws() -> anyhow::Result<()> {
 
     // 2) 新 agent 进程出现 → 广播 upsert
     fake_proc(proc_root.path(), 100, "codex");
-    let found = pf_hub::scanner::scan(proc_root.path());
+    let found = clawpit::scanner::scan(proc_root.path());
     let events = hub.state.registry.write().await.apply_discovered(found);
     assert_eq!(events.len(), 1, "只应有一条 upsert");
     for ev in events {
@@ -73,7 +73,7 @@ async fn snapshot_upsert_gone_over_ws() -> anyhow::Result<()> {
 
     // 3) 进程消失 → 广播 gone
     std::fs::remove_dir_all(proc_root.path().join("100"))?;
-    let found = pf_hub::scanner::scan(proc_root.path());
+    let found = clawpit::scanner::scan(proc_root.path());
     let events = hub.state.registry.write().await.apply_discovered(found);
     assert_eq!(events.len(), 1, "只应有一条 gone");
     for ev in events {

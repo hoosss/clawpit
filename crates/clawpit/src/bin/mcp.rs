@@ -1,11 +1,11 @@
-//! pf-mcp：pixel-forge 的 MCP 服务器（stdio / ndjson JSON-RPC，手写协议层）。
+//! clawpit-mcp：clawpit 的 MCP 服务器（stdio / ndjson JSON-RPC，手写协议层）。
 //!
 //! agent CLI（claude/codex/gemini…）把它配成 MCP server 后，agent 即获得三个工具：
-//!   pf_list  看车间成员
-//!   pf_send  给别的 agent（或 human）发消息
-//!   pf_inbox 取自己的待收消息（取走即清）
+//!   clawpit_list  看车间成员
+//!   clawpit_send  给别的 agent（或 human）发消息
+//!   clawpit_inbox 取自己的待收消息（取走即清）
 //! 身份：用父进程 pid 匹配 hub 注册表——谁拉起我，我就是谁。
-//! 环境变量 PF_HUB 覆盖 hub 地址（默认 127.0.0.1:7664）。
+//! 环境变量 CLAWPIT_HUB 覆盖 hub 地址（默认 127.0.0.1:7664）。
 
 use std::{
     io::{BufRead, Read, Write},
@@ -17,13 +17,13 @@ use serde_json::{json, Value};
 
 fn main() {
     if let Err(e) = run() {
-        eprintln!("pf-mcp: {e}");
+        eprintln!("clawpit-mcp: {e}");
         std::process::exit(1);
     }
 }
 
 fn run() -> anyhow::Result<()> {
-    let hub = std::env::var("PF_HUB").unwrap_or_else(|_| "127.0.0.1:7664".into());
+    let hub = std::env::var("CLAWPIT_HUB").unwrap_or_else(|_| "127.0.0.1:7664".into());
     let stdin = std::io::stdin();
     for line in stdin.lock().lines() {
         let line = line?;
@@ -64,20 +64,20 @@ fn initialize_result(req: &Value) -> Value {
             .and_then(Value::as_str)
             .unwrap_or("2025-06-18"),
         "capabilities": { "tools": {} },
-        "serverInfo": { "name": "pixel-forge", "version": env!("CARGO_PKG_VERSION") },
-        "instructions": "你在像素车间里。pf_list 查看车间成员；pf_send(to,text) 给同事或 human 发消息；pf_inbox 取你的待收消息。"
+        "serverInfo": { "name": "clawpit", "version": env!("CARGO_PKG_VERSION") },
+        "instructions": "你在像素车间里。clawpit_list 查看车间成员；clawpit_send(to,text) 给同事或 human 发消息；clawpit_inbox 取你的待收消息。"
     })
 }
 
 fn tools_desc() -> Value {
     json!([
         {
-            "name": "pf_list",
+            "name": "clawpit_list",
             "description": "列出像素车间里当前所有 agent（id/名称/状态/provider）",
             "inputSchema": { "type": "object", "properties": {} }
         },
         {
-            "name": "pf_send",
+            "name": "clawpit_send",
             "description": "给另一个 agent（to=agent id，如 cc-1234 / sp-1）或 human 发消息。发给 hub 宿主的活 worker 会直接注入其会话，否则进收件箱。",
             "inputSchema": {
                 "type": "object",
@@ -89,7 +89,7 @@ fn tools_desc() -> Value {
             }
         },
         {
-            "name": "pf_inbox",
+            "name": "clawpit_inbox",
             "description": "取走自己名下的待收消息（取走即清）",
             "inputSchema": { "type": "object", "properties": {} }
         }
@@ -107,11 +107,11 @@ fn call_tool(hub: &str, req: &Value) -> Value {
         .unwrap_or(json!({}));
     let pid = parent_id();
     let (text, is_err) = match name {
-        "pf_list" => match http(hub, "GET", "/agents", None) {
+        "clawpit_list" => match http(hub, "GET", "/agents", None) {
             Ok(body) => (format_agents(&body), false),
             Err(e) => (format!("连不上 hub（{hub}）: {e}"), true),
         },
-        "pf_send" => {
+        "clawpit_send" => {
             let to = args.get("to").and_then(Value::as_str).unwrap_or("");
             let msg = args.get("text").and_then(Value::as_str).unwrap_or("");
             let body = json!({ "from_pid": pid, "to": to, "text": msg }).to_string();
@@ -120,7 +120,7 @@ fn call_tool(hub: &str, req: &Value) -> Value {
                 Err(e) => (format!("发送失败: {e}"), true),
             }
         }
-        "pf_inbox" => match http(hub, "GET", &format!("/inbox?pid={pid}"), None) {
+        "clawpit_inbox" => match http(hub, "GET", &format!("/inbox?pid={pid}"), None) {
             Ok(body) => (format_inbox(&body), false),
             Err(e) => (format!("连不上 hub（{hub}）: {e}"), true),
         },

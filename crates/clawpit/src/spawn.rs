@@ -16,7 +16,7 @@ use std::{
     time::Duration,
 };
 
-use pf_scene::{AgentInfo, AgentState, Provider, SceneEvent, Source};
+use clawpit_scene::{AgentInfo, AgentState, Provider, SceneEvent, Source};
 
 use crate::AppState;
 

@@ -8,7 +8,7 @@
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
-use pf_scene::AgentState;
+use clawpit_scene::AgentState;
 
 /// 找 pid 的 transcript。两级定位：
 /// 1. fd 链接（进程若保持日志打开，最精确——部分 CLI 是这么做的）

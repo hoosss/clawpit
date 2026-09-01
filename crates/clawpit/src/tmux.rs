@@ -96,7 +96,7 @@ mod tests {
         }
         // 在 tmux 里跑个 cat，验证注入链路
         let ok = std::process::Command::new("tmux")
-            .args(["new-session", "-d", "-s", "pf-test", "cat"])
+            .args(["new-session", "-d", "-s", "clawpit-test", "cat"])
             .status()
             .unwrap()
             .success();
@@ -107,7 +107,7 @@ mod tests {
             .args([
                 "list-panes",
                 "-t",
-                "pf-test",
+                "clawpit-test",
                 "-F",
                 "#{pane_pid} #{pane_id}",
             ])
@@ -125,9 +125,9 @@ mod tests {
             pane_for_pid(Path::new("/proc"), shell_pid).as_deref(),
             Some(pane)
         );
-        send_text(pane, "hello pixel-forge").unwrap();
+        send_text(pane, "hello clawpit").unwrap();
         let _ = std::process::Command::new("tmux")
-            .args(["kill-session", "-t", "pf-test"])
+            .args(["kill-session", "-t", "clawpit-test"])
             .status();
     }
 

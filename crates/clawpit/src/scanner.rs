@@ -3,7 +3,7 @@
 //! 刻意保持保守：只认 basename 精确命中（claude/codex/gemini/aider/opencode），
 //! node/python 宿主进程不认——M3 再引入 transcript/cmdline 深度识别。
 
-use pf_scene::Provider;
+use clawpit_scene::Provider;
 
 pub struct ProcHit {
     pub pid: u32,

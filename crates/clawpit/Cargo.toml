@@ -1,19 +1,19 @@
 [package]
-name = "pf-hub"
+name = "clawpit"
 version.workspace = true
 edition.workspace = true
-description = "pixel-forge hub：本地 daemon——发现 agent、维护注册表、广播场景事件"
+description = "clawpit hub：本地 daemon——发现 agent、维护注册表、广播场景事件"
 
 [[bin]]
-name = "pf-hub"
+name = "clawpit"
 path = "src/main.rs"
 
 [[bin]]
-name = "pf-mcp"
+name = "clawpit-mcp"
 path = "src/bin/mcp.rs"
 
 [dependencies]
-pf-scene = { workspace = true }
+clawpit-scene = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

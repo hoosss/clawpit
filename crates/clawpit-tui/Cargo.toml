@@ -1,11 +1,11 @@
 [package]
-name = "pf-tui"
+name = "clawpit-tui"
 version.workspace = true
 edition.workspace = true
-description = "pixel-forge TUI 渲染端：像素车间状态墙（v0）"
+description = "clawpit TUI 渲染端：像素车间状态墙（v0）"
 
 [dependencies]
-pf-scene = { workspace = true }
+clawpit-scene = { workspace = true }
 anyhow = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

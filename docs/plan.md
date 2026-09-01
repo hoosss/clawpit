@@ -9,7 +9,7 @@
 - [x] CI：GitHub Actions（fmt + clippy -D warnings + test）
 - [x] CONTRIBUTING.md（环境/结构/约定/provider 适配指南）
 - [x] README 双语化
-- [ ] **等用户**：① 正式项目名（现工作名 pixel-forge）② 确认双协议 ③ GitHub 建仓发布（`git remote add` + push 需你操作或授权）
+- [ ] **等用户**：① 正式项目名（现工作名 clawpit）② 确认双协议 ③ GitHub 建仓发布（`git remote add` + push 需你操作或授权）
 - [ ] Tauri 桌面壳：Web 端已内嵌，桌面化价值边际较低且需 npm 工具链——**建议降级为按需项**，想要再说
 - [ ] crates.io 发布：等定名后 `cargo publish`（工作名下发布不可逆，绝不先斩后奏）
 
@@ -17,21 +17,21 @@
 
 - [x] 需求澄清 + 架构决策（见设计文档）
 - [x] 仓库 init（main 分支）
-- [x] workspace 骨架：pf-scene / pf-hub / pf-tui
-- [x] 设计文档落盘：docs/superpowers/specs/2026-08-31-pixel-forge-design.md
+- [x] workspace 骨架：clawpit-scene / clawpit / clawpit-tui
+- [x] 设计文档落盘：docs/superpowers/specs/2026-08-31-clawpit-design.md
 - [x] rustup 安装（rsproxy.cn 镜像；crates.io 镜像见 ~/.cargo/config.toml）
-- [x] pf-hub 重构 lib+bin（集成测试可复用）+ WS 全链路集成测试已写
+- [x] clawpit 重构 lib+bin（集成测试可复用）+ WS 全链路集成测试已写
 - [x] 编译链打通：系统无 gcc → 用户态 zig cc（~/tools/zig-cc，CC + CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER）
 - [x] `cargo check` 全绿（注意：查输出用 pipefail，别让 tail 吃掉错误码）
 - [x] `cargo test` 全绿：7/7（注册表差量 3 / 扫描器 fixture 1 / 协议 roundtrip 2 / WS 集成冒烟 1）
 - [x] clippy 0 警告 + fmt 通过
 - [x] hub 二进制冒烟：假 /proc + 自定义端口，启动/监听//health/干净退出 OK
 - [x] M0 收尾 commit + tag `v0.1.0-m0`
-- [ ] 待用户：真终端里 `cargo run -p pf-hub` + `cargo run -p pf-tui`，开个 claude 进程看 worker 出现/消失（TUI 需要真实 TTY，无法自动化验证）
+- [ ] 待用户：真终端里 `cargo run -p clawpit` + `cargo run -p clawpit-tui`，开个 claude 进程看 worker 出现/消失（TUI 需要真实 TTY，无法自动化验证）
 
 ## M4 Web 像素车间（✅ 代码完成，v0.5.0-m4）
 
-- [x] pf-web/index.html：单文件零构建 canvas 客户端（vanilla JS，编译期内嵌进 hub，`cargo run -p pf-hub` 后浏览器开 http://localhost:7664 即用）
+- [x] clawpit-web/index.html：单文件零构建 canvas 客户端（vanilla JS，编译期内嵌进 hub，`cargo run -p clawpit` 后浏览器开 http://localhost:7664 即用）
 - [x] 像素感：480x270 低分辨率画布 + CSS pixelated 放大；工人 = 程序化 16px 小人（provider 配色安全帽、干活时挥手弹跳、睡觉 zZ、出错 X!）
 - [x] 同一 WS 场景协议；点击画布/列表选人、说话（POST /msg，气泡上墙+接收者连线）、招工、解雇
 - [x] Vue3 工程化（vite）明确推迟：UI 复杂后再迁移，单文件当前最优（YAGNI）
@@ -50,12 +50,12 @@
 ## M2 邮局（✅ 完成，v0.3.0-m2）
 
 - [x] mail.rs 消息总线：活 worker 直接注入（[from X] 前缀）/ 外部或已退出进收件箱（取走即清）/ 发 human 只上墙
-- [x] pf-mcp 二进制：手写 MCP stdio 协议（ndjson JSON-RPC，零新依赖），pf_list/pf_send/pf_inbox 三工具，父 pid 自报身份（discovered/spawned 通吃）
+- [x] clawpit-mcp 二进制：手写 MCP stdio 协议（ndjson JSON-RPC，零新依赖），clawpit_list/clawpit_send/clawpit_inbox 三工具，父 pid 自报身份（discovered/spawned 通吃）
 - [x] 协议：ChatMessage + SceneEvent::Chat（气泡）；Source::Spawned 携带 pid
 - [x] API：POST /msg、GET /inbox?pid=
 - [x] TUI：车间消息墙（最近气泡）
 - [x] 测试 16/16 + clippy 0 警告 + MCP 真协议冒烟（initialize/tools/call 全通过）
-- [ ] 待用户：给 claude 配 MCP（`{"mcpServers":{"pixel-forge":{"command":"<path>/pf-mcp"}}}`）后让两只 agent 互发消息真实验收
+- [ ] 待用户：给 claude 配 MCP（`{"mcpServers":{"clawpit":{"command":"<path>/clawpit-mcp"}}}`）后让两只 agent 互发消息真实验收
 
 ## M1 宿舍（✅ 完成，v0.2.0-m1）
 
