@@ -5,7 +5,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use pf_scene::{AgentInfo, AgentState, SceneEvent, Source};
+use clawpit_scene::{AgentInfo, AgentState, SceneEvent, Source};
 
 use crate::scanner::ProcHit;
 
@@ -117,7 +117,7 @@ impl Registry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pf_scene::Provider;
+    use clawpit_scene::Provider;
 
     fn hit(pid: u32, provider: Provider) -> ProcHit {
         ProcHit { pid, provider }

@@ -1,16 +1,16 @@
 [workspace]
 resolver = "2"
-members = ["crates/pf-scene", "crates/pf-hub", "crates/pf-tui"]
+members = ["crates/clawpit-scene", "crates/clawpit", "crates/clawpit-tui"]
 
 [workspace.package]
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 readme = "README.md"
 license = "MIT OR Apache-2.0"
 description = "像素风本地 agent 车间：发现、指挥、对话你机器上的 AI 编码 agent"
 
 [workspace.dependencies]
-pf-scene = { path = "crates/pf-scene" }
+clawpit-scene = { path = "crates/clawpit-scene" }
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

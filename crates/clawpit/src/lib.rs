@@ -1,4 +1,4 @@
-//! pf-hub 库：注册表 + 扫描器 + 宿舍（spawn）+ WS 路由组装。
+//! clawpit 库：注册表 + 扫描器 + 宿舍（spawn）+ WS 路由组装。
 //! bin 只负责环境变量解析与启动；库部分供集成测试复用。
 
 pub mod mail;
@@ -17,7 +17,7 @@ use axum::{
     routing::{delete, get, post},
     Json, Router,
 };
-use pf_scene::{AgentInfo, ChatMessage, SceneEvent};
+use clawpit_scene::{AgentInfo, ChatMessage, SceneEvent};
 use registry::Registry;
 use spawn::{SayRequest, SpawnManager, SpawnRequest};
 use tokio::sync::{broadcast, RwLock};
@@ -76,7 +76,7 @@ impl Default for Hub {
 }
 
 /// Web 车间（单文件像素客户端，编译期内嵌，零构建）。
-const INDEX_HTML: &str = include_str!("../../../pf-web/index.html");
+const INDEX_HTML: &str = include_str!("../../../clawpit-web/index.html");
 
 /// 组装 HTTP/WS 路由。
 pub fn router(hub: Hub) -> Router {
@@ -108,11 +108,14 @@ pub async fn discovery_loop(
         let mut reg = state.registry.write().await;
         let mut events = reg.apply_discovered(found);
         // 观察站：给 discovered 的 claude 会话读真实状态（transcript tail）
-        let states: Vec<(String, pf_scene::AgentState)> = reg
+        let states: Vec<(String, clawpit_scene::AgentState)> = reg
             .snapshot()
             .iter()
             .filter_map(|a| match (a.provider, &a.source) {
-                (pf_scene::Provider::ClaudeCode, pf_scene::Source::Discovered { pid }) => Some((
+                (
+                    clawpit_scene::Provider::ClaudeCode,
+                    clawpit_scene::Source::Discovered { pid },
+                ) => Some((
                     a.id.clone(),
                     observe::read_state(&proc_root, *pid, &claude_home),
                 )),
@@ -141,13 +144,14 @@ pub async fn say(hub: &Hub, id: &str, text: &str) -> anyhow::Result<()> {
         .cloned()
         .ok_or_else(|| anyhow::anyhow!("agent 不存在: {id}"))?;
     let pid = match agent.source {
-        pf_scene::Source::Discovered { pid } | pf_scene::Source::Spawned { pid } => pid,
+        clawpit_scene::Source::Discovered { pid } | clawpit_scene::Source::Spawned { pid } => pid,
         _ => anyhow::bail!("该来源不支持注入"),
     };
-    let proc_root = PathBuf::from(std::env::var("PF_PROC_ROOT").unwrap_or_else(|_| "/proc".into()));
+    let proc_root =
+        PathBuf::from(std::env::var("CLAWPIT_PROC_ROOT").unwrap_or_else(|_| "/proc".into()));
     let pane = tmux::pane_for_pid(&proc_root, pid).ok_or_else(|| {
         anyhow::anyhow!(
-            "{id} 不在 tmux 里，无法注入（外部会话需运行在 tmux 中，或用 pf_send 进收件箱）"
+            "{id} 不在 tmux 里，无法注入（外部会话需运行在 tmux 中，或用 clawpit_send 进收件箱）"
         )
     })?;
     tmux::send_text(&pane, text)
@@ -183,7 +187,7 @@ async fn say_agent(
 struct ImportRequest {
     session_id: String,
     #[serde(default)]
-    provider: Option<pf_scene::Provider>,
+    provider: Option<clawpit_scene::Provider>,
 }
 
 /// 手动导入：按 session id 把历史会话以 `claude --resume` 招进车间。
@@ -191,7 +195,7 @@ async fn import_agent(
     State(hub): State<Hub>,
     Json(req): Json<ImportRequest>,
 ) -> Result<Json<AgentInfo>, (StatusCode, String)> {
-    let provider = req.provider.unwrap_or(pf_scene::Provider::ClaudeCode);
+    let provider = req.provider.unwrap_or(clawpit_scene::Provider::ClaudeCode);
     hub.spawn
         .spawn(SpawnRequest {
             provider,
@@ -246,8 +250,8 @@ async fn scene_ws(State(hub): State<Hub>, ws: WebSocketUpgrade) -> Response {
 /// WS 会话：下行=场景事件广播；上行=控制面（spawn/say/stop）。
 async fn handle_socket(socket: axum::extract::ws::WebSocket, hub: Hub, snapshot: SceneEvent) {
     use axum::extract::ws::Message;
+    use clawpit_scene::ClientMessage;
     use futures_util::{SinkExt, StreamExt};
-    use pf_scene::ClientMessage;
     use tokio::sync::broadcast::error::RecvError;
 
     let (mut sender, mut receiver) = socket.split();

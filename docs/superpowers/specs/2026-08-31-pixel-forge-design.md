@@ -1,6 +1,6 @@
-# pixel-forge 设计文档
+# clawpit 设计文档
 
-> 工作名 pixel-forge，可随时整体改名（crate 前缀 `pf-` 一并替换）。
+> 工作名 clawpit，可随时整体改名（crate 前缀 `pf-` 一并替换）。
 > 状态：M0 实施中。本文是产品的唯一权威设计来源，路线图每站开工前先更新这里。
 
 ## 一句话
@@ -23,11 +23,11 @@
 
 ```
 ┌─────────────────────────── 渲染端（可插拔） ───────────────────────────┐
-│  pf-tui (ratatui, M0)   │   Web (Vue3+canvas, M4)   │  Tauri (M5)    │
+│  clawpit-tui (ratatui, M0)   │   Web (Vue3+canvas, M4)   │  Tauri (M5)    │
 └───────────────┬──────────────────────────────────────────┬────────────┘
-                │              WS 场景协议 (pf-scene)        │
+                │              WS 场景协议 (clawpit-scene)        │
 ┌───────────────┴──────────────────────────────────────────┴────────────┐
-│                        pf-hub（本地 daemon）                           │
+│                        clawpit（本地 daemon）                           │
 │  ┌────────────┐  ┌──────────────┐  ┌──────────────────────────────┐  │
 │  │ AgentRegistry│  │ 场景广播(WS) │  │        消息总线 (M2)          │  │
 │  └──────┬─────┘  └──────────────┘  │  MCP server: register/send/  │  │
@@ -49,7 +49,7 @@
 - **Provider**：ClaudeCode / Codex / Gemini / Aider / OpenCode / Generic。
 - **Source**：进入车间的方式——`Discovered`(扫描) / `Spawned`(hub 宿主) / `Registered`(MCP 自报) / `Imported`(手动导入)。**注册表差量规则：一个 driver 只能增删改自己来源的条目。**
 - **AgentState**：Unknown / Thinking / Working / WaitingInput / Done / Error。
-- **场景协议**：hub→渲染端的单向 WS JSON 事件流（`pf-scene` crate 定义），连接时 `Snapshot` 全量，之后 `AgentUpsert` / `AgentGone` 增量。演进规则：只增不改。
+- **场景协议**：hub→渲染端的单向 WS JSON 事件流（`clawpit-scene` crate 定义），连接时 `Snapshot` 全量，之后 `AgentUpsert` / `AgentGone` 增量。演进规则：只增不改。
 
 ### SessionDriver 能力矩阵（目标态）
 
@@ -72,7 +72,7 @@
 
 ## M0 细节
 
-- **端口**：默认 7664（`PF_PORT` 覆盖）；`PF_PROC_ROOT` 可换 proc 根供测试。
+- **端口**：默认 7664（`CLAWPIT_PORT` 覆盖）；`CLAWPIT_PROC_ROOT` 可换 proc 根供测试。
 - **扫描**：2s 一轮；只认 cmdline argv[0] basename 精确命中（claude/codex/gemini/aider/opencode）；node/python 宿主不认，防误报。id 规则 `{provider.short}-{pid}`。
 - **错误处理**：扫描失败静默返回空（下轮重试）；WS 订阅者 lag 只告警不断线；hub 不因单个渲染端崩溃退出。
 - **测试**：注册表差量逻辑（upsert/quiet/gone/不越权）、扫描器用 tempdir 伪造 /proc fixture、协议 serde roundtrip。集成冒烟：起 hub 连 WS 断言事件。
@@ -85,6 +85,6 @@
 
 ## 开放问题
 
-- [ ] 正式命名（现用 pixel-forge）
+- [ ] 正式命名（现用 clawpit）
 - [ ] 开源协议（建议 MIT 或 Apache-2.0，待定）
 - [ ] Web 端像素美术风格（M4 前定）

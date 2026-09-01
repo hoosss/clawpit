@@ -1,8 +1,8 @@
-//! pixel-forge TUI：像素车间。
+//! clawpit TUI：像素车间。
 //!
 //! M0：状态墙（发现存量 agent）
 //! M1：选中 worker（j/k）、喊话（⏎ 输入回车发送）、招工（n=claude）、解雇（x）
-//! 连接 hub 的 /scene WS；断线自动重连。环境变量 `PF_TUI_URL` 覆盖 hub 地址。
+//! 连接 hub 的 /scene WS；断线自动重连。环境变量 `CLAWPIT_TUI_URL` 覆盖 hub 地址。
 
 use std::{
     io::{self, Stdout},
@@ -10,8 +10,8 @@ use std::{
     time::Duration,
 };
 
+use clawpit_scene::{AgentInfo, AgentState, ChatMessage, ClientMessage, Provider, SceneEvent};
 use futures_util::{SinkExt, StreamExt};
-use pf_scene::{AgentInfo, AgentState, ChatMessage, ClientMessage, Provider, SceneEvent};
 use ratatui::{
     backend::CrosstermBackend,
     crossterm::{
@@ -49,7 +49,8 @@ struct Ui {
 }
 
 fn main() -> anyhow::Result<()> {
-    let url = std::env::var("PF_TUI_URL").unwrap_or_else(|_| "ws://127.0.0.1:7664/scene".into());
+    let url =
+        std::env::var("CLAWPIT_TUI_URL").unwrap_or_else(|_| "ws://127.0.0.1:7664/scene".into());
 
     let ui = Arc::new(Mutex::new(Ui {
         agents: Vec::new(),
@@ -260,7 +261,7 @@ fn draw(f: &mut ratatui::Frame, u: &Ui) {
     let para = Paragraph::new(lines).block(
         Block::default()
             .borders(Borders::ALL)
-            .title(" pixel-forge · 车间 "),
+            .title(" clawpit · 车间 "),
     );
     f.render_widget(para, main);
 

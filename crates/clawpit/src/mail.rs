@@ -15,7 +15,7 @@ use std::{
     },
 };
 
-use pf_scene::{AgentInfo, ChatMessage, SceneEvent};
+use clawpit_scene::{AgentInfo, ChatMessage, SceneEvent};
 
 use crate::{spawn::SpawnManager, AppState};
 
@@ -84,7 +84,7 @@ impl MailManager {
         if to != HUMAN {
             // 收件人必须存在（拿不到锁/查无此人都算失败）
             if self.state.registry.read().await.get(to).is_none() {
-                anyhow::bail!("收件人不存在: {to}（用 pf_list 查车间成员）");
+                anyhow::bail!("收件人不存在: {to}（用 clawpit_list 查车间成员）");
             }
             // hub 宿主且活着 → 直接注入；外部 tmux 会话 → send-keys；否则入收件箱
             let payload = format!("[from {}] {}", msg.from_name, msg.text);
@@ -125,11 +125,13 @@ impl MailManager {
             return false;
         };
         let pid = match agent.source {
-            pf_scene::Source::Discovered { pid } | pf_scene::Source::Spawned { pid } => pid,
+            clawpit_scene::Source::Discovered { pid } | clawpit_scene::Source::Spawned { pid } => {
+                pid
+            }
             _ => return false,
         };
         let proc_root = std::path::PathBuf::from(
-            std::env::var("PF_PROC_ROOT").unwrap_or_else(|_| "/proc".into()),
+            std::env::var("CLAWPIT_PROC_ROOT").unwrap_or_else(|_| "/proc".into()),
         );
         crate::tmux::pane_for_pid(&proc_root, pid)
             .map(|pane| crate::tmux::send_text(&pane, text).is_ok())
@@ -150,7 +152,7 @@ impl MailManager {
 mod tests {
     use super::*;
     use crate::spawn::SpawnRequest;
-    use pf_scene::Provider;
+    use clawpit_scene::Provider;
 
     fn hub() -> Arc<MailManager> {
         let state = AppState::new();

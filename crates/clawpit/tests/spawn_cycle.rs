@@ -2,11 +2,11 @@
 
 use std::time::Duration;
 
-use pf_hub::{
+use clawpit::{
     spawn::{provider_command, SpawnRequest},
     Hub,
 };
-use pf_scene::{AgentState, Provider, Source};
+use clawpit_scene::{AgentState, Provider, Source};
 
 #[tokio::test]
 async fn spawn_exit_state_then_stop_clears() -> anyhow::Result<()> {
@@ -61,7 +61,7 @@ async fn say_writes_stdin_and_stop_kills() -> anyhow::Result<()> {
         .await?;
     assert_eq!(agent.state, AgentState::Working);
 
-    hub.spawn.say(&agent.id, "hello pixel-forge")?;
+    hub.spawn.say(&agent.id, "hello clawpit")?;
 
     // 对不存在的 worker 喊话应报错
     assert!(hub.spawn.say("sp-99999", "x").is_err());

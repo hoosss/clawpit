@@ -165,6 +165,46 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
+name = "clawpit"
+version = "0.6.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "clawpit-scene",
+ "futures-util",
+ "portable-pty",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-tungstenite 0.23.1",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "clawpit-scene"
+version = "0.6.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "clawpit-tui"
+version = "0.6.0"
+dependencies = [
+ "anyhow",
+ "clawpit-scene",
+ "crossterm",
+ "futures-util",
+ "ratatui",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite 0.23.1",
+]
+
+[[package]]
 name = "compact_str"
 version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -724,46 +764,6 @@ name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
-
-[[package]]
-name = "pf-hub"
-version = "0.5.0"
-dependencies = [
- "anyhow",
- "axum",
- "futures-util",
- "pf-scene",
- "portable-pty",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tokio-tungstenite 0.23.1",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "pf-scene"
-version = "0.5.0"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "pf-tui"
-version = "0.5.0"
-dependencies = [
- "anyhow",
- "crossterm",
- "futures-util",
- "pf-scene",
- "ratatui",
- "serde_json",
- "tokio",
- "tokio-tungstenite 0.23.1",
-]
 
 [[package]]
 name = "pin-project-lite"
