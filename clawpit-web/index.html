@@ -58,7 +58,7 @@ const PROVIDER_COLORS = {
   aider:'#e06b6b', opencode:'#e0c96b', generic:'#9aa0b0'
 };
 const STATE_TEXT = {
-  unknown:'？', thinking:'…想', working:'⚒干', waiting_input:'⏸等', done:'✓完', error:'✗错'
+  unknown:'？', thinking:'想', working:'干', waiting_input:'等', done:'完', error:'错'
 };
 let agents = [];          // [{id,provider,name,state,source}]
 let messages = [];        // [{id,from,from_name,to,text,ts}]
@@ -188,7 +188,7 @@ function draw(t){
   // 背景墙 & 灯
   ctx.fillStyle = '#171928'; ctx.fillRect(0, 0, cv.width, 30);
   ctx.fillStyle = '#f7d51d'; ctx.font = '9px monospace';
-  ctx.fillText('PIXEL-FORGE WORKSHOP', 8, 13);
+  ctx.fillText('CLAWPIT PIT CREW', 8, 13);
   ctx.fillStyle = '#5a5'; ctx.fillText(connected ? '● live' : '○ off', cv.width-46, 13);
 
   const ss = slots(agents.length);
