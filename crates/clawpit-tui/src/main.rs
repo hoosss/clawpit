@@ -3,6 +3,10 @@
 //! M0：状态墙（发现存量 agent）
 //! M1：选中 worker（j/k）、喊话（⏎ 输入回车发送）、招工（n=claude）、解雇（x）
 //! 连接 hub 的 /scene WS；断线自动重连。环境变量 `CLAWPIT_TUI_URL` 覆盖 hub 地址。
+//!
+//! 健壮性约定：选中项用 agent id（下标会因重排漂移→喊错人）；终端状态由
+//! TermGuard 的 Drop 恢复（panic 也不泄漏 raw mode）；Ctrl+C 显式处理
+//! （raw mode 下 ISIG 被禁，内核不会再发 SIGINT）。
 
 use std::{
     io::{self, Stdout},
@@ -41,11 +45,46 @@ enum Mode {
 
 struct Ui {
     agents: Vec<AgentInfo>,
-    selected: usize,
+    /// 选中的 agent id（不是下标——列表重排后下标会指向别人）
+    selected: Option<String>,
     mode: Mode,
     status: String,
     /// 车间对话（最近 50 条，气泡墙）
     messages: Vec<ChatMessage>,
+}
+
+/// 终端状态守卫：Drop 时恢复 raw mode/备用屏/光标，panic 路径也不泄漏。
+struct TermGuard {
+    terminal: Option<Term>,
+}
+
+impl TermGuard {
+    fn setup() -> io::Result<Self> {
+        enable_raw_mode()?;
+        let mut stdout = io::stdout();
+        if let Err(e) = execute!(stdout, EnterAlternateScreen) {
+            let _ = disable_raw_mode();
+            return Err(e);
+        }
+        match Terminal::new(CrosstermBackend::new(io::stdout())) {
+            Ok(t) => Ok(Self { terminal: Some(t) }),
+            Err(e) => {
+                let _ = disable_raw_mode();
+                let _ = execute!(io::stdout(), LeaveAlternateScreen);
+                Err(e)
+            }
+        }
+    }
+}
+
+impl Drop for TermGuard {
+    fn drop(&mut self) {
+        if let Some(mut t) = self.terminal.take() {
+            let _ = disable_raw_mode();
+            let _ = execute!(t.backend_mut(), LeaveAlternateScreen);
+            let _ = t.show_cursor();
+        }
+    }
 }
 
 fn main() -> anyhow::Result<()> {
@@ -54,7 +93,7 @@ fn main() -> anyhow::Result<()> {
 
     let ui = Arc::new(Mutex::new(Ui {
         agents: Vec::new(),
-        selected: 0,
+        selected: None,
         mode: Mode::Normal,
         status: "connecting…".into(),
         messages: Vec::new(),
@@ -90,8 +129,13 @@ fn main() -> anyhow::Result<()> {
                                 .await
                             {
                                 Ok(Some(Ok(Message::Text(txt)))) => {
-                                    if let Ok(ev) = serde_json::from_str::<SceneEvent>(&txt) {
-                                        apply_event(&ui, ev);
+                                    match serde_json::from_str::<SceneEvent>(&txt) {
+                                        Ok(ev) => apply_event(&ui, ev),
+                                        Err(_) => {
+                                            // 协议不一致时宁可吵醒用户，也不要僵尸视图
+                                            ui.lock().unwrap().status =
+                                                "事件解析失败（hub 版本不一致？重连中）".into();
+                                        }
                                     }
                                 }
                                 Ok(Some(Ok(_))) => {}
@@ -107,17 +151,25 @@ fn main() -> anyhow::Result<()> {
         });
     }
 
-    // 主线程：终端事件循环
-    let mut terminal = setup_terminal()?;
-    let res = run(&mut terminal, ui, ctrl_tx);
-    restore_terminal(terminal)?;
+    // 主线程：终端事件循环（guard 的 Drop 保证任何退出路径都恢复终端）
+    let mut guard = TermGuard::setup()?;
+    let res = run(guard.terminal.as_mut().unwrap(), ui, ctrl_tx);
+    drop(guard);
     res
 }
 
 fn apply_event(ui: &Arc<Mutex<Ui>>, ev: SceneEvent) {
     let mut u = ui.lock().unwrap();
     match ev {
-        SceneEvent::Snapshot { agents } => u.agents = agents,
+        SceneEvent::Snapshot { agents } => {
+            // 快照是全量替换：选中项若已消失必须失效，否则悬空 id 会打到 400
+            if let Some(sel) = &u.selected {
+                if !agents.iter().any(|a| &a.id == sel) {
+                    u.selected = None;
+                }
+            }
+            u.agents = agents;
+        }
         SceneEvent::AgentUpsert { agent } => {
             match u.agents.iter_mut().find(|a| a.id == agent.id) {
                 Some(slot) => *slot = agent,
@@ -127,8 +179,8 @@ fn apply_event(ui: &Arc<Mutex<Ui>>, ev: SceneEvent) {
         }
         SceneEvent::AgentGone { id } => {
             u.agents.retain(|a| a.id != id);
-            if u.selected >= u.agents.len() {
-                u.selected = u.agents.len().saturating_sub(1);
+            if u.selected.as_deref() == Some(id.as_str()) {
+                u.selected = None;
             }
         }
         SceneEvent::Chat { message } => {
@@ -139,6 +191,12 @@ fn apply_event(ui: &Arc<Mutex<Ui>>, ev: SceneEvent) {
             }
         }
     }
+}
+
+/// 当前选中项在列表中的下标（未选中/已消失 = None）。
+fn selected_index(u: &Ui) -> Option<usize> {
+    let sel = u.selected.as_ref()?;
+    u.agents.iter().position(|a| &a.id == sel)
 }
 
 fn run(
@@ -157,7 +215,14 @@ fn run(
         let Event::Key(key) = event::read()? else {
             continue;
         };
-        if key.kind != KeyEventKind::Press || key.modifiers.contains(KeyModifiers::CONTROL) {
+        if key.kind != KeyEventKind::Press {
+            continue;
+        }
+        // raw mode 禁了 ISIG，内核不发 SIGINT——Ctrl+C 必须手动处理
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+            return Ok(());
+        }
+        if key.modifiers.contains(KeyModifiers::CONTROL) {
             continue;
         }
 
@@ -167,10 +232,9 @@ fn run(
             // ── 输入模式 ──
             (Mode::Input(_), KeyCode::Esc) => {}
             (Mode::Input(buf), KeyCode::Enter) => {
-                let target = u.agents.get(u.selected).map(|a| a.id.clone());
                 if buf.is_empty() {
                     // 空输入=取消
-                } else if let Some(id) = target {
+                } else if let Some(id) = u.selected.clone() {
                     ctrl.send(ClientMessage::Say { id, text: buf })?;
                 } else {
                     u.status = "车间空无一人，先按 n 招工".into();
@@ -186,19 +250,28 @@ fn run(
             }
             (Mode::Input(buf), _) => u.mode = Mode::Input(buf),
 
-            // ── 普通模式 ──
-            (Mode::Normal, KeyCode::Char('q') | KeyCode::Esc) => return Ok(()),
+            // ── 普通模式（Esc 不退出——输入模式取消后习惯性多按一次不该杀掉整个 TUI）──
+            (Mode::Normal, KeyCode::Char('q')) => return Ok(()),
             (Mode::Normal, KeyCode::Char('j') | KeyCode::Down) => {
                 if !u.agents.is_empty() {
-                    u.selected = (u.selected + 1).min(u.agents.len() - 1);
+                    let next = selected_index(&u)
+                        .map(|i| (i + 1).min(u.agents.len() - 1))
+                        .unwrap_or(0);
+                    u.selected = Some(u.agents[next].id.clone());
                 }
             }
             (Mode::Normal, KeyCode::Char('k') | KeyCode::Up) => {
-                u.selected = u.selected.saturating_sub(1);
+                if !u.agents.is_empty() {
+                    let prev = selected_index(&u).map(|i| i.saturating_sub(1)).unwrap_or(0);
+                    u.selected = Some(u.agents[prev].id.clone());
+                }
             }
             (Mode::Normal, KeyCode::Enter) => {
-                if u.agents.is_empty() {
+                if u.selected.is_none() && u.agents.is_empty() {
                     u.status = "先按 n 招一只 worker".into();
+                } else if u.selected.is_none() {
+                    u.selected = Some(u.agents[0].id.clone());
+                    u.mode = Mode::Input(String::new());
                 } else {
                     u.mode = Mode::Input(String::new());
                 }
@@ -212,8 +285,7 @@ fn run(
                 u.status = format!("已申请招工（{}）…", SPAWN_PROVIDER.short());
             }
             (Mode::Normal, KeyCode::Char('x')) => {
-                if let Some(a) = u.agents.get(u.selected) {
-                    let id = a.id.clone();
+                if let Some(id) = u.selected.clone() {
                     ctrl.send(ClientMessage::Stop { id })?;
                 }
             }
@@ -237,8 +309,8 @@ fn draw(f: &mut ratatui::Frame, u: &Ui) {
             "  车间空无一人…按 n 招工，或在别的终端跑 claude/codex/gemini",
         ));
     }
-    for (i, a) in u.agents.iter().enumerate() {
-        let selected = i == u.selected;
+    for a in &u.agents {
+        let selected = u.selected.as_deref() == Some(a.id.as_str());
         let cursor = if selected { "▶" } else { " " };
         let name_style = if selected {
             Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED)
@@ -285,9 +357,18 @@ fn draw(f: &mut ratatui::Frame, u: &Ui) {
         .block(Block::default().borders(Borders::ALL).title(" 车间消息 "));
     f.render_widget(chat_para, chat);
 
-    // 输入行（喊话编辑区）
+    // 输入行：超长只显示尾部（盲打比截断更糟）
     let input_line = match &u.mode {
-        Mode::Input(buf) => Line::from(format!(" 喊话› {buf}_")),
+        Mode::Input(buf) => {
+            let count = buf.chars().count();
+            let shown: String = if count > 40 {
+                let skip = count - 40;
+                format!("…{}", buf.chars().skip(skip).collect::<String>())
+            } else {
+                buf.clone()
+            };
+            Line::from(format!(" 喊话› {shown}_"))
+        }
         Mode::Normal => Line::from(""),
     };
     f.render_widget(Paragraph::new(input_line), input);
@@ -295,7 +376,7 @@ fn draw(f: &mut ratatui::Frame, u: &Ui) {
     let hint = match &u.mode {
         Mode::Input(_) => " Enter 发送 · Esc 取消 ".to_string(),
         Mode::Normal => format!(
-            " {} | j/k 选人 · ⏎ 喊话 · n 招工({}) · x 解雇 · q 退出 ",
+            " {} | j/k 选人 · ⏎ 喊话 · n 招工({}) · x 解雇 · q/Ctrl+C 退出 ",
             u.status,
             SPAWN_PROVIDER.short()
         ),
@@ -323,17 +404,4 @@ fn state_glyph(s: AgentState) -> &'static str {
         AgentState::Done => "✓ 完成",
         AgentState::Error => "✗ 出错",
     }
-}
-
-fn setup_terminal() -> io::Result<Term> {
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
-    Terminal::new(CrosstermBackend::new(stdout))
-}
-
-fn restore_terminal(mut terminal: Term) -> io::Result<()> {
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    terminal.show_cursor()
 }

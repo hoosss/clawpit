@@ -69,12 +69,19 @@ let connected = false;
 let ws, retry = 1000;
 function connect(){
   setStatus('connecting…');
-  ws = new WebSocket(`ws://${location.host}/scene`);
+  // file:// 直开时 location.host 为空会同步抛异常，砸断渲染循环——兜住走重连提示
+  if (!location.host){ setStatus('请通过 hub 访问（http://localhost:7664）'); return; }
+  try { ws = new WebSocket(`ws://${location.host}/scene`); }
+  catch (e){ setStatus('WS 连接失败：' + e.message); setTimeout(connect, 5000); return; }
   ws.onopen = () => { connected = true; retry = 1000; setStatus('connected'); };
   ws.onclose = () => { connected = false; setTimeout(connect, retry); retry = Math.min(retry*2, 8000); setStatus('reconnecting…'); };
   ws.onmessage = e => {
     const ev = JSON.parse(e.data);
-    if (ev.type === 'snapshot') agents = ev.agents;
+    if (ev.type === 'snapshot'){
+      agents = ev.agents;
+      // 快照是全量替换：选中项若已消失必须失效，否则悬空 id 会打到 400
+      if (selected && !agents.some(a => a.id === selected)) selected = null;
+    }
     else if (ev.type === 'agent_upsert'){
       const i = agents.findIndex(a => a.id === ev.agent.id);
       i >= 0 ? agents[i] = ev.agent : agents.push(ev.agent);
@@ -103,13 +110,15 @@ function renderList(){
     const d = document.createElement('div');
     d.className = 'agent' + (a.id === selected ? ' sel' : '');
     d.innerHTML = `<span class="chip" style="background:${PROVIDER_COLORS[a.provider]||'#888'}"></span>
-      <span class="aname">${a.name}</span><span class="astate">${STATE_TEXT[a.state]||a.state}</span>`;
+      <span class="aname">${esc(a.name)}</span><span class="astate">${STATE_TEXT[a.state]||esc(a.state)}</span>`;
     d.onclick = () => { selected = a.id; renderList(); };
     box.appendChild(d);
   }
 }
 function trimChat(){
+  // 全量重建（不是增量 append——旧实现每条消息重复 append，同一条最多显示 8 次）
   const box = document.getElementById('chat');
+  box.innerHTML = '';
   for (const m of messages.slice(-40)){
     const d = document.createElement('div');
     d.className = 'm';
@@ -117,16 +126,20 @@ function trimChat(){
     box.appendChild(d);
   }
   box.scrollTop = box.scrollHeight;
-  while (box.children.length > 40) box.removeChild(box.firstChild);
 }
 function esc(s){ const d=document.createElement('span'); d.textContent=s??''; return d.innerHTML; }
 
 // ── 控制 ──────────────────────────────────────────────────────
 async function api(method, path, body){
-  const r = await fetch(path, {method, headers:{'content-type':'application/json'},
-    body: body ? JSON.stringify(body) : undefined});
-  if (!r.ok) throw new Error((await r.text()) || r.statusText);
-  return r.json();
+  // 5s 超时：hub 偶发阻塞时用户至少能看到失败提示，而不是输入框永久 pending
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 5000);
+  try {
+    const r = await fetch(path, {method, headers:{'content-type':'application/json'},
+      body: body ? JSON.stringify(body) : undefined, signal: ctl.signal});
+    if (!r.ok) throw new Error((await r.text()) || r.statusText);
+    return r.json();
+  } finally { clearTimeout(timer); }
 }
 async function speak(){
   const el = document.getElementById('msg');
@@ -164,10 +177,15 @@ function mouseToScene(e){
   return { x: (e.clientX - r.left) / r.width * cv.width,
            y: (e.clientY - r.top) / r.height * cv.height };
 }
-// 工位布局：车间地板网格上自动排位
+// 工位布局：最多 4 行，挤得下就横向加密——工人再多也画在画布内
 function slots(n){
   const out = [];
-  const cols = 6, x0 = 34, y0 = 56, dx = 72, dy = 56;
+  if (n === 0) return out;
+  const rows = Math.min(4, n);
+  const cols = Math.max(1, Math.ceil(n / rows));
+  const x0 = 20, y0 = 52;
+  const dx = Math.min(72, Math.floor((cv.width - x0 - 20) / cols));
+  const dy = 56;
   for (let i = 0; i < n; i++) out.push({x: x0 + (i%cols)*dx, y: y0 + Math.floor(i/cols)*dy});
   return out;
 }
