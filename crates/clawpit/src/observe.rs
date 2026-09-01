@@ -110,11 +110,21 @@ pub fn read_state(proc_root: &Path, pid: u32, claude_home: &Path) -> AgentState 
     if f.seek(SeekFrom::Start(start)).is_err() {
         return AgentState::Unknown;
     }
-    let mut buf = String::new();
-    if f.take(8192).read_to_string(&mut buf).is_err() {
+    // 按字节读，窗口起点可能落在多字节 UTF-8 中间——先对齐到行首再 lossy 解码，
+    // 否则中文会话的 tail 大概率整窗作废（read_to_string 直接报错）
+    let mut bytes = Vec::new();
+    if f.take(8192 + 16).read_to_end(&mut bytes).is_err() {
         return AgentState::Unknown;
     }
-    parse_state(&buf)
+    if start > 0 {
+        match bytes.iter().position(|&b| b == b'\n') {
+            Some(nl) => {
+                bytes.drain(..=nl);
+            }
+            None => bytes.clear(), // 窗口内没有完整行，放弃
+        }
+    }
+    parse_state(&String::from_utf8_lossy(&bytes))
 }
 
 #[cfg(test)]
@@ -192,6 +202,31 @@ mod tests {
         assert_eq!(
             slug("/home/jinxing.hu/p/edding-erp"),
             "-home-jinxing-hu-p-edding-erp"
+        );
+    }
+
+    #[test]
+    fn tail_window_starting_mid_utf8_char_still_parses() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("claude-home");
+        let log = home.join("projects/aaa.jsonl");
+        std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+        let tool_line = r#"{"type":"assistant","message":{"content":[{"type":"tool_use"}]}}"#;
+        // 构造 >8KB 文件，且窗口起点落在"中"字（3 字节 UTF-8）中间
+        let mut content = String::new();
+        content.push_str(&"中".repeat(3000)); // 9000 字节，无换行（起点必在多字节字符内）
+        content.push('\n');
+        content.push_str(tool_line);
+        content.push('\n');
+        std::fs::write(&log, content).unwrap();
+        let fd = dir.path().join("4242/fd");
+        std::fs::create_dir_all(&fd).unwrap();
+        std::os::unix::fs::symlink(&log, fd.join("3")).unwrap();
+
+        assert_eq!(
+            read_state(dir.path(), 4242, &home),
+            AgentState::Working,
+            "窗口起点落在 UTF-8 字符中间也不应作废整窗"
         );
     }
 }

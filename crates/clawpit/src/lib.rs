@@ -105,25 +105,30 @@ pub async fn discovery_loop(
     loop {
         tick.tick().await;
         let found = scanner::scan(&proc_root);
-        let mut reg = state.registry.write().await;
-        let mut events = reg.apply_discovered(found);
+        // 锁内只做登记和取清单；阻塞文件 I/O（observe）放锁外，否则整个 API 被扫描串住
+        let (mut events, discovered) = {
+            let mut reg = state.registry.write().await;
+            let events = reg.apply_discovered(found);
+            let discovered: Vec<(String, u32)> = reg
+                .snapshot()
+                .iter()
+                .filter_map(|a| match (a.provider, &a.source) {
+                    (
+                        clawpit_scene::Provider::ClaudeCode,
+                        clawpit_scene::Source::Discovered { pid },
+                    ) => Some((a.id.clone(), *pid)),
+                    _ => None,
+                })
+                .collect();
+            (events, discovered)
+        };
         // 观察站：给 discovered 的 claude 会话读真实状态（transcript tail）
-        let states: Vec<(String, clawpit_scene::AgentState)> = reg
-            .snapshot()
-            .iter()
-            .filter_map(|a| match (a.provider, &a.source) {
-                (
-                    clawpit_scene::Provider::ClaudeCode,
-                    clawpit_scene::Source::Discovered { pid },
-                ) => Some((
-                    a.id.clone(),
-                    observe::read_state(&proc_root, *pid, &claude_home),
-                )),
-                _ => None,
-            })
+        let states: Vec<(String, clawpit_scene::AgentState)> = discovered
+            .into_iter()
+            .map(|(id, pid)| (id, observe::read_state(&proc_root, pid, &claude_home)))
             .collect();
-        events.extend(reg.apply_states(&states));
-        drop(reg);
+        let more = state.registry.write().await.apply_states(&states);
+        events.extend(more);
         for ev in events {
             let _ = state.tx.send(ev);
         }
@@ -149,6 +154,11 @@ pub async fn say(hub: &Hub, id: &str, text: &str) -> anyhow::Result<()> {
     };
     let proc_root =
         PathBuf::from(std::env::var("CLAWPIT_PROC_ROOT").unwrap_or_else(|_| "/proc".into()));
+    // pid 复用防线：注册表里的 pid 可能已被系统分给无关进程，注入前必须复核
+    anyhow::ensure!(
+        tmux::pid_still_agent(&proc_root, pid, agent.provider),
+        "{id} 的进程 {pid} 已不存在（pid 可能被复用），拒绝注入"
+    );
     let pane = tmux::pane_for_pid(&proc_root, pid).ok_or_else(|| {
         anyhow::anyhow!(
             "{id} 不在 tmux 里，无法注入（外部会话需运行在 tmux 中，或用 clawpit_send 进收件箱）"
@@ -258,6 +268,7 @@ async fn handle_socket(socket: axum::extract::ws::WebSocket, hub: Hub, snapshot:
     let mut rx = hub.state.tx.subscribe();
 
     // 下行任务：先快照，再转发广播
+    let send_state = hub.state.clone();
     let send_task = tokio::spawn(async move {
         if let Ok(json) = serde_json::to_string(&snapshot) {
             if sender.send(Message::Text(json)).await.is_err() {
@@ -275,7 +286,16 @@ async fn handle_socket(socket: axum::extract::ws::WebSocket, hub: Hub, snapshot:
                     }
                 }
                 Err(RecvError::Lagged(n)) => {
-                    tracing::warn!(missed = n, "scene subscriber lagged");
+                    // 慢客户端丢帧：补一份全量快照自愈，避免幽灵 agent 永久残留
+                    tracing::warn!(missed = n, "scene subscriber lagged, resync snapshot");
+                    let snap = SceneEvent::Snapshot {
+                        agents: send_state.registry.read().await.snapshot(),
+                    };
+                    if let Ok(json) = serde_json::to_string(&snap) {
+                        if sender.send(Message::Text(json)).await.is_err() {
+                            break;
+                        }
+                    }
                 }
                 Err(RecvError::Closed) => break,
             }
