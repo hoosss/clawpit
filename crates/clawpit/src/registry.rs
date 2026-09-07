@@ -76,6 +76,34 @@ impl Registry {
         events
     }
 
+    /// 批量更新标题（观察站产出），返回变更事件。
+    /// None（观察不到）不清空已有标题——避免 transcript 暂时读不到时名牌闪烁。
+    pub fn apply_titles(&mut self, titles: &[(String, Option<String>)]) -> Vec<SceneEvent> {
+        let mut events = Vec::new();
+        for (id, title) in titles {
+            let Some(t) = title else { continue };
+            if let Some(a) = self.agents.get_mut(id) {
+                if matches!(a.source, Source::Discovered { .. })
+                    && a.title.as_deref() != Some(t.as_str())
+                {
+                    a.title = Some(t.clone());
+                    events.push(SceneEvent::AgentUpsert { agent: a.clone() });
+                }
+            }
+        }
+        events
+    }
+
+    /// 设置任意来源 agent 的标题（注入式喊话刷新任务名牌用），变更才返回事件。
+    pub fn set_title(&mut self, id: &str, title: Option<String>) -> Option<SceneEvent> {
+        let a = self.agents.get_mut(id)?;
+        if a.title == title {
+            return None;
+        }
+        a.title = title;
+        Some(SceneEvent::AgentUpsert { agent: a.clone() })
+    }
+
     /// 应用一轮扫描结果，返回需要广播的差量事件。
     pub fn apply_discovered(&mut self, found: Vec<ProcHit>) -> Vec<SceneEvent> {
         let mut events = Vec::new();
@@ -96,13 +124,18 @@ impl Registry {
             }
             let id = format!("{}-{}", hit.provider.short(), hit.pid);
             seen.insert(id.clone());
-            let agent = AgentInfo {
+            let mut agent = AgentInfo {
                 id: id.clone(),
                 provider: hit.provider,
                 name: id.clone(),
                 state: AgentState::Unknown,
                 source: Source::Discovered { pid: hit.pid },
+                title: None,
             };
+            // 扫描重建时继承旧标题：否则每轮差量比较都会抹掉它并狂发 upsert
+            if let Some(old) = self.agents.get(&id) {
+                agent.title = old.title.clone();
+            }
             let unchanged = self.agents.get(&id).is_some_and(|old| *old == agent);
             if !unchanged {
                 self.agents.insert(id.clone(), agent.clone());
@@ -168,6 +201,7 @@ mod tests {
                 name: "cc-999".into(),
                 state: AgentState::Unknown,
                 source: Source::Spawned { pid: 999 },
+                title: None,
             },
         );
         let events = reg.apply_discovered(vec![]);
@@ -186,6 +220,7 @@ mod tests {
                 name: "sp-1".into(),
                 state: AgentState::Working,
                 source: Source::Spawned { pid: 4242 },
+                title: None,
             },
         );
         // 扫描器在同一 pid 上命中 claude → 不得生成 cc-4242 双胞胎

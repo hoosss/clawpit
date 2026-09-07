@@ -122,13 +122,27 @@ pub async fn discovery_loop(
                 .collect();
             (events, discovered)
         };
-        // 观察站：给 discovered 的 claude 会话读真实状态（transcript tail）
-        let states: Vec<(String, clawpit_scene::AgentState)> = discovered
+        // 观察站：给 discovered 的 claude 会话读真实状态与标题（一次 tail 两得）
+        let observations: Vec<(String, observe::Observation)> = discovered
             .into_iter()
-            .map(|(id, pid)| (id, observe::read_state(&proc_root, pid, &claude_home)))
+            .map(|(id, pid)| {
+                let o = observe::read_observation(&proc_root, pid, &claude_home);
+                (id, o)
+            })
             .collect();
-        let more = state.registry.write().await.apply_states(&states);
-        events.extend(more);
+        let states: Vec<(String, clawpit_scene::AgentState)> = observations
+            .iter()
+            .map(|(id, o)| (id.clone(), o.state))
+            .collect();
+        let titles: Vec<(String, Option<String>)> = observations
+            .iter()
+            .map(|(id, o)| (id.clone(), o.title.clone()))
+            .collect();
+        {
+            let mut reg = state.registry.write().await;
+            events.extend(reg.apply_states(&states));
+            events.extend(reg.apply_titles(&titles));
+        }
         for ev in events {
             let _ = state.tx.send(ev);
         }

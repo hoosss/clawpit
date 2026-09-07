@@ -105,12 +105,14 @@ impl MailManager {
             let payload = format!("[from {}] {}", msg.from_name, msg.text);
             let delivery = if self.spawn.is_alive(to) {
                 if self.spawn.say(to, &payload).is_ok() {
+                    self.refresh_title(to, &msg.text).await;
                     Delivery::InjectedStdin
                 } else {
                     self.enqueue(to, &msg);
                     Delivery::Inbox
                 }
             } else if self.tmux_deliver(to, &payload).await {
+                self.refresh_title(to, &msg.text).await;
                 Delivery::InjectedTmux
             } else {
                 self.enqueue(to, &msg);
@@ -134,6 +136,20 @@ impl MailManager {
             .entry(to.to_string())
             .or_default()
             .push_back(msg.clone());
+    }
+
+    /// 注入成功的喊话把消息正文设成收件人的任务名牌（截断一行），
+    /// 招来的 worker 从此按"正在干什么"可辨识，而不是一串 sp-3。
+    async fn refresh_title(&self, id: &str, text: &str) {
+        let t = text.trim();
+        let mut title: String = t.chars().take(39).collect();
+        if t.chars().count() > 39 {
+            title.push('…');
+        }
+        let ev = self.state.registry.write().await.set_title(id, Some(title));
+        if let Some(ev) = ev {
+            let _ = self.state.tx.send(ev);
+        }
     }
 
     /// 按 pid 取收件箱（取走即清）。返回 (匹配到的 agent, 消息)。

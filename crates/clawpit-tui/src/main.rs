@@ -327,6 +327,11 @@ fn draw(f: &mut ratatui::Frame, u: &Ui) {
             ),
             Span::styled(format!(" {}  ", a.name), name_style),
             Span::styled(state_glyph(a.state), Style::default().fg(Color::Gray)),
+            // 任务名牌：观察站从 transcript 推的"正在干什么"，一眼分辨车间里每只小人
+            Span::styled(
+                format!(" {}", title_short(a.title.as_deref().unwrap_or(""))),
+                Style::default().fg(Color::DarkGray),
+            ),
         ]));
     }
 
@@ -393,6 +398,15 @@ fn provider_color(p: Provider) -> Color {
         Provider::OpenCode => Color::LightYellow,
         Provider::Generic => Color::Gray,
     }
+}
+
+/// 名牌一行显示的长度（终端窄，超过就截）。
+fn title_short(t: &str) -> String {
+    let mut out: String = t.chars().take(24).collect();
+    if t.chars().count() > 24 {
+        out.push('…');
+    }
+    out
 }
 
 fn state_glyph(s: AgentState) -> &'static str {

@@ -99,22 +99,27 @@ pub fn parse_state(tail: &str) -> AgentState {
 
 /// 定位并读出 pid 的真实状态（定位不到 = Unknown）。
 pub fn read_state(proc_root: &Path, pid: u32, claude_home: &Path) -> AgentState {
+    read_observation(proc_root, pid, claude_home).state
+}
+
+/// 一次 tail 同时拿状态和标题（定位不到 = Unknown / None）。
+pub fn read_observation(proc_root: &Path, pid: u32, claude_home: &Path) -> Observation {
     let Some(path) = resolve_transcript(proc_root, pid, claude_home) else {
-        return AgentState::Unknown;
+        return Observation::default();
     };
     let Ok(mut f) = std::fs::File::open(&path) else {
-        return AgentState::Unknown;
+        return Observation::default();
     };
     let len = f.metadata().map(|m| m.len()).unwrap_or(0);
     let start = len.saturating_sub(8192);
     if f.seek(SeekFrom::Start(start)).is_err() {
-        return AgentState::Unknown;
+        return Observation::default();
     }
     // 按字节读，窗口起点可能落在多字节 UTF-8 中间——先对齐到行首再 lossy 解码，
     // 否则中文会话的 tail 大概率整窗作废（read_to_string 直接报错）
     let mut bytes = Vec::new();
     if f.take(8192 + 16).read_to_end(&mut bytes).is_err() {
-        return AgentState::Unknown;
+        return Observation::default();
     }
     if start > 0 {
         match bytes.iter().position(|&b| b == b'\n') {
@@ -124,7 +129,80 @@ pub fn read_state(proc_root: &Path, pid: u32, claude_home: &Path) -> AgentState 
             None => bytes.clear(), // 窗口内没有完整行，放弃
         }
     }
-    parse_state(&String::from_utf8_lossy(&bytes))
+    let tail = String::from_utf8_lossy(&bytes);
+    Observation {
+        state: parse_state(&tail),
+        title: parse_title(&tail),
+    }
+}
+
+/// 观察结果：真实状态 + 会话标题（最后一个真人输入，截断到一行）。
+#[derive(Debug)]
+pub struct Observation {
+    pub state: AgentState,
+    pub title: Option<String>,
+}
+
+impl Default for Observation {
+    fn default() -> Self {
+        Self {
+            state: AgentState::Unknown,
+            title: None,
+        }
+    }
+}
+
+/// 从 tail 里找最后一个"真人输入"当会话标题（纯函数，好测）。
+/// 规则：倒序扫 user 行；content 为字符串或含 text 块才算，tool_result 不算；
+/// 斜杠命令 / <system-reminder> / <command-*> / caveat 开头的行不算；
+/// 找到后按字符截到 40，超长补省略号。
+pub fn parse_title(tail: &str) -> Option<String> {
+    fn clean(s: &str) -> String {
+        let t = s.trim();
+        let mut out: String = t.chars().take(39).collect();
+        if t.chars().count() > 39 {
+            out.push('…');
+        }
+        out
+    }
+    for line in tail.lines().rev() {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if v.get("type").and_then(|x| x.as_str()) != Some("user") {
+            continue;
+        }
+        let Some(content) = v.pointer("/message/content") else {
+            continue;
+        };
+        let text = match content {
+            serde_json::Value::String(s) => Some(s.clone()),
+            serde_json::Value::Array(arr) => {
+                let texts: Vec<&str> = arr
+                    .iter()
+                    .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
+                    .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+                    .collect();
+                if texts.is_empty() {
+                    None // tool_result-only：不是人话
+                } else {
+                    Some(texts.join(" "))
+                }
+            }
+            _ => None,
+        };
+        let Some(text) = text else { continue };
+        let t = text.trim();
+        if t.is_empty()
+            || t.starts_with('<')
+            || t.starts_with("Caveat:")
+            || t.starts_with("[Request interrupted")
+        {
+            continue;
+        }
+        return Some(clean(t));
+    }
+    None
 }
 
 #[cfg(test)]
@@ -203,6 +281,46 @@ mod tests {
             slug("/home/jinxing.hu/p/edding-erp"),
             "-home-jinxing-hu-p-edding-erp"
         );
+    }
+
+    #[test]
+    fn parse_title_picks_last_real_user_prompt() {
+        // 纯字符串 content 的 user 行 → 直接用
+        let plain = r#"{"type":"user","message":{"content":"修复登录页的空指针"}}"#;
+        assert_eq!(parse_title(plain).as_deref(), Some("修复登录页的空指针"));
+        // 数组 content 带 text 块 → 拼 text
+        let blocks =
+            r#"{"type":"user","message":{"content":[{"type":"text","text":"先写测试再实现"}]}}"#;
+        assert_eq!(parse_title(blocks).as_deref(), Some("先写测试再实现"));
+        // tool_result-only 的 user 行不是人话，跳过，往更早找
+        let toolres = concat!(
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"ok"}]}}"#,
+            "\n",
+            r#"{"type":"user","message":{"content":"真正的任务"}}"#
+        );
+        assert_eq!(parse_title(toolres).as_deref(), Some("真正的任务"));
+        // 斜杠命令 / 系统提醒行不算任务
+        let cmd = concat!(
+            r#"{"type":"user","message":{"content":"<command-name>/clear</command-name>"}}"#,
+            "\n",
+            r#"{"type":"user","message":{"content":"<system-reminder>别用</system-reminder>"}}"#,
+            "\n",
+            r#"{"type":"user","message":{"content":"正经需求"}}"#
+        );
+        assert_eq!(parse_title(cmd).as_deref(), Some("正经需求"));
+        // 超长截断
+        let long = format!(
+            r#"{{"type":"user","message":{{"content":"{}"}}}}"#,
+            "很".repeat(80)
+        );
+        let got = parse_title(&long).unwrap();
+        assert!(got.chars().count() <= 40, "超长标题必须截断，得到 {got}");
+        // 没有 user 行 → None
+        assert_eq!(
+            parse_title(r#"{"type":"assistant","message":{"content":[]}}"#),
+            None
+        );
+        assert_eq!(parse_title(""), None);
     }
 
     #[test]

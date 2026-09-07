@@ -92,6 +92,10 @@ pub struct AgentInfo {
     pub name: String,
     pub state: AgentState,
     pub source: Source,
+    /// 人类可辨识的上下文标题（当前任务一句话）。观察站从 transcript 推断，
+    /// 注入式喊话也会用消息正文刷新它；None = 显示回退到 name。
+    #[serde(default)]
+    pub title: Option<String>,
 }
 
 /// WS 场景事件（JSON，tag = type）。
@@ -148,6 +152,7 @@ mod tests {
                 name: "cc-42".into(),
                 state: AgentState::Unknown,
                 source: Source::Discovered { pid: 42 },
+                title: None,
             },
         };
         let json = serde_json::to_string(&ev).unwrap();

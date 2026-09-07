@@ -105,6 +105,7 @@ impl SpawnManager {
             name: id.clone(),
             state: AgentState::Working,
             source: Source::Spawned { pid: child_pid },
+            title: None,
         };
 
         let session = Arc::new(Session {
