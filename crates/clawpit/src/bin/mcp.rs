@@ -115,7 +115,7 @@ fn tools_desc() -> Value {
     json!([
         {
             "name": "clawpit_list",
-            "description": "列出像素车间里当前所有 agent（id/名称/状态/provider）",
+            "description": "列出像素车间里当前所有 agent（id/provider/任务标题/状态/所在房间）",
             "inputSchema": { "type": "object", "properties": {} }
         },
         {
@@ -150,7 +150,11 @@ fn call_tool(hub: &str, req: &Value, pid_override: Option<u32>) -> Value {
     let pid = pid_override.unwrap_or_else(parent_id);
     let (text, is_err) = match name {
         "clawpit_list" => match http(hub, "GET", "/agents", None) {
-            Ok(body) => (format_agents(&body), false),
+            Ok(body) => {
+                // 名册顺带查房间名（失败不致命，裸显房间 id）
+                let rooms = http(hub, "GET", "/rooms", None).ok();
+                (format_agents(&body, rooms.as_deref()), false)
+            }
             Err(e) => (format!("连不上 hub（{hub}）: {e}"), true),
         },
         "clawpit_send" => {
@@ -181,23 +185,48 @@ fn call_tool(hub: &str, req: &Value, pid_override: Option<u32>) -> Value {
     json!({ "content": [ { "type": "text", "text": text } ], "isError": is_err })
 }
 
-fn format_agents(body: &str) -> String {
+/// 名册一行化：id / provider / 任务标题（无则回退 name）/ 状态 / @房间名。
+/// 协作 agent 靠这份清单决定"找谁、在哪、正干什么"——标题和房间是关键上下文。
+fn format_agents(body: &str, rooms_json: Option<&str>) -> String {
     let Ok(Value::Array(agents)) = serde_json::from_str::<Value>(body) else {
         return body.to_string();
     };
     if agents.is_empty() {
         return "(车间空无一人)".into();
     }
+    // 房间 id → 名字；/rooms 拿不到就裸显 id（不该让房间查询失败拖垮名册）
+    let rooms: std::collections::HashMap<String, String> = rooms_json
+        .and_then(|r| serde_json::from_str::<Value>(r).ok())
+        .and_then(|v| v.as_array().cloned())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|r| {
+                    Some((
+                        r.get("id")?.as_str()?.to_string(),
+                        r.get("name")?.as_str()?.to_string(),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     agents
         .iter()
         .map(|a| {
-            format!(
-                "{}  {:?}  {}  {}",
-                a.get("id").and_then(Value::as_str).unwrap_or("?"),
-                a.get("provider").and_then(Value::as_str).unwrap_or("?"),
-                a.get("name").and_then(Value::as_str).unwrap_or("?"),
-                a.get("state").and_then(Value::as_str).unwrap_or("?")
-            )
+            let id = a.get("id").and_then(Value::as_str).unwrap_or("?");
+            let provider = a.get("provider").and_then(Value::as_str).unwrap_or("?");
+            let title = a
+                .get("title")
+                .and_then(Value::as_str)
+                .filter(|t| !t.is_empty())
+                .or_else(|| a.get("name").and_then(Value::as_str))
+                .unwrap_or("?");
+            let state = a.get("state").and_then(Value::as_str).unwrap_or("?");
+            let room = a
+                .get("room")
+                .and_then(Value::as_str)
+                .map(|rid| rooms.get(rid).cloned().unwrap_or_else(|| rid.to_string()))
+                .unwrap_or_else(|| "大厅".into());
+            format!("{id}  {provider}  {title}  {state}  @{room}")
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -287,5 +316,31 @@ mod tests {
         assert_eq!(negotiate_version(Some("2025-06-18")), "2025-06-18");
         assert_eq!(negotiate_version(Some("1999-99-99")), SUPPORTED_PROTOCOL);
         assert_eq!(negotiate_version(None), SUPPORTED_PROTOCOL);
+    }
+
+    /// 名册要带任务标题与房间名（协作 agent 的关键上下文），
+    /// 且 /rooms 失败不拖垮名册（裸显房间 id）。
+    #[test]
+    fn roster_carries_title_and_room() {
+        let agents = r#"[
+            {"id":"cc-42","provider":"claude_code","name":"cc-42","state":"working",
+             "title":"修登录空指针","room":"rm-1"},
+            {"id":"cc-43","provider":"claude_code","name":"cc-43","state":"waiting_input"}
+        ]"#;
+        let rooms = r#"[{"id":"lobby","name":"大厅","archived":false},{"id":"rm-1","name":"重构间","archived":false}]"#;
+        let out = format_agents(agents, Some(rooms));
+        assert!(
+            out.contains("cc-42  claude_code  修登录空指针  working  @重构间"),
+            "{out}"
+        );
+        // 无 title 回退 name；无 room 视为大厅
+        assert!(
+            out.contains("cc-43  claude_code  cc-43  waiting_input  @大厅"),
+            "{out}"
+        );
+        // /rooms 拿不到：裸显房间 id，不 panic 不空
+        let out2 = format_agents(agents, None);
+        assert!(out2.contains("@rm-1"), "{out2}");
+        assert_eq!(format_agents("[]", None), "(车间空无一人)");
     }
 }
