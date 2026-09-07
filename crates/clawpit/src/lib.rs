@@ -233,14 +233,21 @@ struct InboxQuery {
     pid: u32,
 }
 
+/// /msg 响应：消息本体 + 实际投递去向（收件箱=死信候选，必须可见）。
+#[derive(Debug, serde::Serialize)]
+struct SendResponse {
+    message: ChatMessage,
+    delivered: mail::Delivery,
+}
+
 async fn send_msg(
     State(hub): State<Hub>,
     Json(req): Json<mail::SendRequest>,
-) -> Result<Json<ChatMessage>, (StatusCode, String)> {
+) -> Result<Json<SendResponse>, (StatusCode, String)> {
     hub.mail
         .send(req.from_pid, &req.to, &req.text)
         .await
-        .map(Json)
+        .map(|(message, delivered)| Json(SendResponse { message, delivered }))
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
 }
 

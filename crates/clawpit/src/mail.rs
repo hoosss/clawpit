@@ -21,6 +21,21 @@ use crate::{spawn::SpawnManager, AppState};
 
 pub const HUMAN: &str = "human";
 
+/// 一句话最终去了哪。收件箱是死信候选（对方要配了 clawpit MCP 才取得到），
+/// 必须让调用方知道，不能静默吞成"已发送"。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Delivery {
+    /// hub 宿主 worker，已写进它的 stdin
+    InjectedStdin,
+    /// 外部 tmux 会话，已 send-keys
+    InjectedTmux,
+    /// 注入不可用，进了收件箱等 MCP 取件
+    Inbox,
+    /// 发给 human，只上墙展示
+    Wall,
+}
+
 #[derive(Debug, serde::Deserialize)]
 pub struct SendRequest {
     /// 发送者进程 pid（MCP 工具传父 pid）；None 或未匹配 = 人（human）
@@ -54,13 +69,13 @@ impl MailManager {
         })
     }
 
-    /// 发一句话：解析身份 → 路由投递 → 上墙广播。
+    /// 发一句话：解析身份 → 路由投递 → 上墙广播。返回消息与投递去向。
     pub async fn send(
         &self,
         from_pid: Option<u32>,
         to: &str,
         text: &str,
-    ) -> anyhow::Result<ChatMessage> {
+    ) -> anyhow::Result<(ChatMessage, Delivery)> {
         if to.is_empty() || text.trim().is_empty() {
             anyhow::bail!("to 和 text 不能为空");
         }
@@ -81,32 +96,44 @@ impl MailManager {
             text: text.trim().to_string(),
         };
 
-        if to != HUMAN {
+        let delivery = if to != HUMAN {
             // 收件人必须存在（拿不到锁/查无此人都算失败）
             if self.state.registry.read().await.get(to).is_none() {
                 anyhow::bail!("收件人不存在: {to}（用 clawpit_list 查车间成员）");
             }
             // hub 宿主且活着 → 直接注入；外部 tmux 会话 → send-keys；否则入收件箱
             let payload = format!("[from {}] {}", msg.from_name, msg.text);
-            let injected = if self.spawn.is_alive(to) {
-                self.spawn.say(to, &payload).is_ok()
+            let delivery = if self.spawn.is_alive(to) {
+                if self.spawn.say(to, &payload).is_ok() {
+                    Delivery::InjectedStdin
+                } else {
+                    self.enqueue(to, &msg);
+                    Delivery::Inbox
+                }
+            } else if self.tmux_deliver(to, &payload).await {
+                Delivery::InjectedTmux
             } else {
-                self.tmux_deliver(to, &payload).await
+                self.enqueue(to, &msg);
+                Delivery::Inbox
             };
-            if !injected {
-                self.inboxes
-                    .lock()
-                    .unwrap()
-                    .entry(to.to_string())
-                    .or_default()
-                    .push_back(msg.clone());
-            }
-        }
+            delivery
+        } else {
+            Delivery::Wall
+        };
 
         let _ = self.state.tx.send(SceneEvent::Chat {
             message: msg.clone(),
         });
-        Ok(msg)
+        Ok((msg, delivery))
+    }
+
+    fn enqueue(&self, to: &str, msg: &ChatMessage) {
+        self.inboxes
+            .lock()
+            .unwrap()
+            .entry(to.to_string())
+            .or_default()
+            .push_back(msg.clone());
     }
 
     /// 按 pid 取收件箱（取走即清）。返回 (匹配到的 agent, 消息)。
@@ -167,7 +194,7 @@ mod tests {
     #[tokio::test]
     async fn human_to_human_only_walls() -> anyhow::Result<()> {
         let mail = hub();
-        let msg = mail.send(None, HUMAN, "测试一句话").await?;
+        let (msg, _) = mail.send(None, HUMAN, "测试一句话").await?;
         assert_eq!(msg.from, HUMAN);
         assert!(
             mail.inboxes.lock().unwrap().is_empty(),
@@ -195,7 +222,7 @@ mod tests {
             })
             .await?;
         // cat 活着 → 注入成功，不入收件箱
-        let msg = mail.send(None, &agent.id, "干活！").await?;
+        let (msg, _) = mail.send(None, &agent.id, "干活！").await?;
         assert_eq!(msg.to, agent.id);
         assert!(
             !mail.inboxes.lock().unwrap().contains_key(&agent.id),
@@ -239,9 +266,48 @@ mod tests {
             provider: Provider::Codex,
         };
         state.registry.write().await.apply_discovered(vec![hit]);
-        let msg = mail.send(Some(777), HUMAN, "我是 codex").await?;
+        let (msg, _) = mail.send(Some(777), HUMAN, "我是 codex").await?;
         assert_eq!(msg.from, "cx-777");
         assert_eq!(msg.from_name, "cx-777");
+        Ok(())
+    }
+
+    /// 投递去向必须如实回报：注入成功/进收件箱是两种完全不同的结果，
+    /// 静默降级成"已发送"会让用户以为对方收到了（真实事故：外部 agent 不在
+    /// tmux 又没配 MCP，消息全成死信，UI 却一路显示成功）。
+    #[tokio::test]
+    async fn delivery_status_reported() -> anyhow::Result<()> {
+        let state = AppState::new();
+        let spawn = SpawnManager::new(state.clone());
+        let mail = MailManager::new(state.clone(), spawn.clone());
+
+        // 发给 human → 只上墙
+        let (_, d) = mail.send(None, HUMAN, "hi").await?;
+        assert_eq!(d, Delivery::Wall);
+
+        // discovered 且不在 tmux → 收件箱（死信可见）
+        state
+            .registry
+            .write()
+            .await
+            .apply_discovered(vec![crate::scanner::ProcHit {
+                pid: 888,
+                provider: Provider::ClaudeCode,
+            }]);
+        let (_, d) = mail.send(None, "cc-888", "在吗").await?;
+        assert_eq!(d, Delivery::Inbox);
+
+        // hub 宿主活 worker → stdin 注入
+        let agent = spawn
+            .spawn(SpawnRequest {
+                provider: Provider::Generic,
+                cwd: None,
+                argv: Some(vec!["cat".into()]),
+            })
+            .await?;
+        let (_, d) = mail.send(None, &agent.id, "干").await?;
+        assert_eq!(d, Delivery::InjectedStdin);
+        spawn.stop(&agent.id).await?;
         Ok(())
     }
 }
