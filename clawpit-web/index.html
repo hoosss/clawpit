@@ -7,8 +7,11 @@
   html,body{margin:0;height:100%;background:#1a1c2c;color:#e8e8e8;
     font-family:"Courier New",ui-monospace,monospace;overflow:hidden;user-select:none}
   #app{display:flex;height:100%}
-  #stage{flex:1;position:relative;min-width:0}
-  canvas{image-rendering:pixelated;image-rendering:crisp-edges;width:100%;height:100%;display:block;cursor:crosshair}
+  #stage{flex:1;position:relative;min-width:0;background:#1a1c2c}
+  #cv{width:100%;height:100%;display:block;cursor:crosshair}
+  text{font-family:ui-monospace,"Cascadia Mono",Consolas,"SF Mono",Menlo,"Courier New",monospace}
+  .worker{cursor:pointer}
+  .worker:hover{filter:brightness(1.18)}
   #side{width:264px;background:#12131f;border-left:2px solid #2a2c3f;display:flex;flex-direction:column;font-size:12px}
   #hdr{padding:10px 12px;border-bottom:2px solid #2a2c3f;letter-spacing:1px;color:#f7d51d}
   #agents{flex:1 1 38%;overflow-y:auto;padding:6px}
@@ -34,7 +37,24 @@
 </head>
 <body>
 <div id="app">
-  <div id="stage"><canvas id="cv" width="480" height="270"></canvas></div>
+  <div id="stage">
+    <svg id="cv" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet">
+      <defs>
+        <pattern id="floor" width="16" height="16" patternUnits="userSpaceOnUse">
+          <rect width="16" height="16" fill="#1e2035"/>
+          <rect width="8" height="8" fill="#20223a"/>
+          <rect x="8" y="8" width="8" height="8" fill="#20223a"/>
+        </pattern>
+      </defs>
+      <rect id="wall" width="100%" height="30" fill="#171928"/>
+      <text id="sign" x="8" y="13" font-size="9" letter-spacing="1" fill="#f7d51d">CLAWPIT PIT CREW</text>
+      <text id="live" x="0" y="13" font-size="9" text-anchor="end" fill="#5a5">● live</text>
+      <rect id="floorrect" y="30" width="100%" height="100%" fill="url(#floor)"/>
+      <!-- floorrect 高度 100% 会越过 viewBox 底边，被视口裁掉——正好铺满，无需精确高度 -->
+      <g id="workers"></g>
+      <g id="bubbles"></g>
+    </svg>
+  </div>
   <div id="side">
     <div id="hdr">▶ clawpit 车间</div>
     <div id="agents"></div>
@@ -92,7 +112,8 @@ function connect(){
       if (selected === ev.id) selected = null;
     }
     else if (ev.type === 'chat'){ ev.message.ts = Date.now(); messages.push(ev.message); trimChat(); }
-    renderList();
+    // chat 不动工人 DOM（重建会打断 :hover），只有名单变化才重建
+    ev.type === 'chat' ? renderList() : rebuildWorkers();
   };
 }
 function setStatus(s){ document.getElementById('status').textContent = s; }
@@ -148,8 +169,15 @@ async function speak(){
   if (!selected){ setStatus('先在列表或画布上选中一只 worker'); return; }
   try {
     // 走邮局：能注入的直接注入，不能的进收件箱；同时气泡上墙
-    await api('POST', '/msg', {from_pid: null, to: selected, text});
+    const r = await api('POST', '/msg', {from_pid: null, to: selected, text});
     el.value = '';
+    // 投递去向如实相告：收件箱是死信候选（对方不在 tmux 且未配 MCP 就永远看不到）
+    if (r.delivered === 'inbox')
+      setStatus(`⚠ 只进了 ${selected} 的收件箱——它不在 tmux 也没配 clawpit MCP，收不到。让它跑在 tmux 里，或用「招工」直管`);
+    else if (r.delivered === 'wall')
+      setStatus('已上墙');
+    else
+      setStatus(`✓ 已注入 ${selected}（${r.delivered === 'injected_stdin' ? 'stdin' : 'tmux'}）`);
   } catch(e){ setStatus('发送失败：' + e.message); }
 }
 document.getElementById('b-send').onclick = speak;
@@ -161,113 +189,182 @@ document.getElementById('b-stop').onclick = () => {
   api('DELETE', '/agents/' + selected).catch(e => setStatus('解雇失败：'+e.message));
 };
 
-// ── 像素画布（480x270 低分辨率 + CSS 放大 = 像素感） ──────────────
-const cv = document.getElementById('cv'), ctx = cv.getContext('2d');
-ctx.imageSmoothingEnabled = false;
-let hover = null;
-cv.addEventListener('click', e => {
-  const p = mouseToScene(e);
-  const a = hitWorker(p);
-  selected = a ? a.id : selected;
-  renderList();
-});
-cv.addEventListener('mousemove', e => { hover = hitWorker(mouseToScene(e)); });
-function mouseToScene(e){
-  const r = cv.getBoundingClientRect();
-  return { x: (e.clientX - r.left) / r.width * cv.width,
-           y: (e.clientY - r.top) / r.height * cv.height };
+// ── SVG 矢量车间（viewBox 场景坐标系，几何渲染任意缩放都锐利） ────────
+const svg = document.getElementById('cv'),
+      workersG = document.getElementById('workers'),
+      bubblesG = document.getElementById('bubbles'),
+      liveText = document.getElementById('live');
+const SCENE_H = 270;
+let sceneW = 480, sceneH = SCENE_H;  // 随容器宽高比动态算，修掉旧 canvas 无脑拉伸的变形
+let workerEls = [];      // [{id, g, armL, armR, sel}]
+
+// 视口自适应：常规窗口 = 高 270 单位、宽度贴比例；极窄窗口宽封顶 320 下限、
+// 高度相应变长（地板铺满，多出来的就是地板），任何比例都不变形也不 letterbox
+function layout(){
+  const r = svg.getBoundingClientRect();
+  if (r.height < 1 || r.width < 1) return;
+  sceneW = Math.max(320, SCENE_H * r.width / r.height);
+  sceneH = sceneW * r.height / r.width;
+  svg.setAttribute('viewBox', `0 0 ${sceneW} ${sceneH}`);
+  liveText.setAttribute('x', sceneW - 8);
 }
-// 工位布局：最多 4 行，挤得下就横向加密——工人再多也画在画布内
+new ResizeObserver(layout).observe(document.getElementById('stage'));
+
+// 工位布局：横向优先（每行按宽度挤满 72 宽的工位），最多 4 行——
+// 窄窗口自动折行，工人再多也画在画布内
 function slots(n){
   const out = [];
   if (n === 0) return out;
-  const rows = Math.min(4, n);
-  const cols = Math.max(1, Math.ceil(n / rows));
-  const x0 = 20, y0 = 52;
-  const dx = Math.min(72, Math.floor((cv.width - x0 - 20) / cols));
-  const dy = 56;
+  const x0 = 20, y0 = 52, dy = 56;
+  const perRow = Math.max(1, Math.floor((sceneW - x0 - 20) / 72));
+  const rows = Math.min(4, Math.ceil(n / perRow));
+  const cols = Math.ceil(n / rows);
+  const dx = Math.max(24, Math.min(72, Math.floor((sceneW - x0 - 20) / cols)));
   for (let i = 0; i < n; i++) out.push({x: x0 + (i%cols)*dx, y: y0 + Math.floor(i/cols)*dy});
   return out;
 }
-function hitWorker(p){
-  const ss = slots(agents.length);
-  for (let i = 0; i < agents.length; i++){
-    const s = ss[i];
-    if (p.x >= s.x-6 && p.x <= s.x+18 && p.y >= s.y-14 && p.y <= s.y+18) return agents[i];
-  }
-  return null;
+function slotOf(id){
+  const i = agents.findIndex(a => a.id === id);
+  return i < 0 ? null : slots(agents.length)[i];
 }
-function draw(t){
-  // 地板：棋盘格
-  for (let y = 0; y < cv.height; y += 16)
-    for (let x = 0; x < cv.width; x += 16)
-      ctx.fillStyle = ((x+y)/16) % 2 ? '#20223a' : '#1e2035',
-      ctx.fillRect(x, y, 16, 16);
-  // 背景墙 & 灯
-  ctx.fillStyle = '#171928'; ctx.fillRect(0, 0, cv.width, 30);
-  ctx.fillStyle = '#f7d51d'; ctx.font = '9px monospace';
-  ctx.fillText('CLAWPIT PIT CREW', 8, 13);
-  ctx.fillStyle = '#5a5'; ctx.fillText(connected ? '● live' : '○ off', cv.width-46, 13);
 
+// worker 结构只在名单变化时重建（扫描会周期性推 upsert，重建会打断 :hover）；
+// 每帧只动 transform/手臂/选框，不碰 DOM 结构
+let workersKey = '';
+function rebuildWorkers(){
+  renderList();
+  const key = agents.map(a => a.id).join(',');
+  if (key === workersKey) return;   // 名单没变：状态由 frame() 逐帧读，侧栏已刷新
+  workersKey = key;
+  workersG.innerHTML = '';
+  workerEls = agents.map(a => {
+    const c = PROVIDER_COLORS[a.provider] || '#9aa0b0';
+    const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    g.setAttribute('class', 'worker');
+    // 像素小人由矢量 rect 拼成：任意缩放边缘锐利，坐标沿用旧 sprite 网格
+    g.innerHTML =
+      `<rect class="hit" x="-6" y="-14" width="24" height="33" fill="transparent"/>` +
+      `<rect class="shadow" x="1" y="15" width="11" height="2" fill="rgba(0,0,0,.4)"/>` +
+      `<rect class="legs" x="3" y="11" width="3" height="4" fill="#3a3d5f"/>` +
+      `<rect class="legs" x="7" y="11" width="3" height="4" fill="#3a3d5f"/>` +
+      `<rect class="body" x="2" y="5" width="9" height="7" fill="${c}"/>` +
+      `<rect class="armL" x="0" y="6" width="2" height="5" fill="${c}"/>` +
+      `<rect class="armR" x="11" y="6" width="2" height="5" fill="${c}"/>` +
+      `<rect class="head" x="3" y="0" width="7" height="5" fill="#f0c8a0"/>` +
+      `<rect x="2" y="-2" width="9" height="2" fill="${c}"/>` +
+      `<rect x="5" y="-4" width="4" height="2" fill="${c}"/>` +
+      `<rect x="4" y="2" width="1.2" height="1.4" fill="#222"/>` +
+      `<rect x="8" y="2" width="1.2" height="1.4" fill="#222"/>` +
+      `<text class="name" x="-2" y="24" font-size="7" fill="#cfd3ff"></text>` +
+      `<text class="st" x="13" y="-2" font-size="7" fill="#ffe"></text>`;
+    g.querySelector('.name').textContent = a.name.slice(0, 9);
+    g.addEventListener('click', () => { selected = a.id; renderList(); });
+    workersG.appendChild(g);
+    return { id: a.id, g,
+      armL: g.querySelector('.armL'), armR: g.querySelector('.armR'),
+      st: g.querySelector('.st') };
+  });
+}
+
+const STATE_GLYPH = {working:'!', thinking:'...', waiting_input:'zZ', done:'OK', error:'X!', unknown:'?'};
+const STATE_FILL = {error:'#ff6b6b', done:'#6bff8f'};
+
+// 每帧：浮沉/挥臂走亚像素（旧 canvas 版取整，一格一格跳）
+function frame(t){
   const ss = slots(agents.length);
-  agents.forEach((a, i) => drawWorker(ss[i].x, ss[i].y, a, t, a.id === selected));
-  drawBubbles(t);
-  requestAnimationFrame(draw);
+  agents.forEach((a, i) => {
+    const el = workerEls[i];
+    if (!el) return;
+    const s = ss[i];
+    const bob = a.state === 'working' ? Math.abs(Math.sin(t/1000*5 + s.x)) * 2 : 0;
+    el.g.setAttribute('transform', `translate(${s.x} ${s.y - bob})`);
+    if (a.state === 'working'){
+      const arm = Math.sin(t/1000*9) * 2;
+      el.armL.setAttribute('y', 6 - arm);
+      el.armR.setAttribute('y', 6 + arm);
+    } else {
+      el.armL.setAttribute('y', 6);
+      el.armR.setAttribute('y', 6);
+    }
+    el.st.textContent = STATE_GLYPH[a.state] || '?';
+    el.st.setAttribute('fill', STATE_FILL[a.state] || '#ffe');
+    // 选框：非缩放描边，任何窗口尺寸下都是 2 物理像素的锐利黄框
+    let sel = el.g.querySelector('.selbox');
+    if (a.id === selected && !sel){
+      sel = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      sel.setAttribute('class', 'selbox');
+      sel.setAttribute('x', -5.5); sel.setAttribute('y', -13.5);
+      sel.setAttribute('width', 23); sel.setAttribute('height', 32);
+      sel.setAttribute('fill', 'none'); sel.setAttribute('stroke', '#f7d51d');
+      sel.setAttribute('stroke-width', 2);
+      sel.setAttribute('vector-effect', 'non-scaling-stroke');
+      el.g.insertBefore(sel, el.g.firstChild);
+    } else if (a.id !== selected && sel){
+      sel.remove();
+    }
+  });
+  liveText.textContent = connected ? '● live' : '○ off';
+  liveText.setAttribute('fill', connected ? '#5a5' : '#a66');
+  drawBubbles();
+  requestAnimationFrame(frame);
 }
-function drawWorker(x, y, a, t, sel){
-  const c = PROVIDER_COLORS[a.provider] || '#9aa0b0';
-  const bob = a.state === 'working' ? Math.round(Math.abs(Math.sin(t*5 + x)) * 2) : 0;
-  const yy = y - bob;
-  if (sel){ ctx.strokeStyle = '#f7d51d'; ctx.lineWidth = 1; ctx.strokeRect(x-5.5, y-13.5, 23, 32); }
-  // 影子
-  ctx.fillStyle = 'rgba(0,0,0,.4)'; ctx.fillRect(x+1, y+15, 11, 2);
-  // 腿
-  ctx.fillStyle = '#3a3d5f'; ctx.fillRect(x+3, yy+11, 3, 4); ctx.fillRect(x+7, yy+11, 3, 4);
-  // 身体（工装）
-  ctx.fillStyle = c; ctx.fillRect(x+2, yy+5, 9, 7);
-  // 手臂：干活时上下挥
-  const arm = a.state === 'working' ? Math.round(Math.sin(t*9)*2) : 0;
-  ctx.fillRect(x, yy+6-arm, 2, 5); ctx.fillRect(x+11, yy+6+arm, 2, 5);
-  // 头 + 安全帽
-  ctx.fillStyle = '#f0c8a0'; ctx.fillRect(x+3, yy, 7, 5);
-  ctx.fillStyle = c; ctx.fillRect(x+2, yy-2, 9, 2); ctx.fillRect(x+5, yy-4, 4, 2);
-  // 眼睛
-  ctx.fillStyle = '#222'; ctx.fillRect(x+4, yy+2, 1, 1); ctx.fillRect(x+8, yy+2, 1, 1);
-  // 名牌
-  ctx.fillStyle = '#cfd3ff'; ctx.font = '7px monospace';
-  ctx.fillText(a.name.slice(0, 9), x - 2, y + 24);
-  // 状态气泡
-  const s = {working:'!', thinking:'...', waiting_input:'zZ', done:'OK', error:'X!', unknown:'?'}[a.state] || '?';
-  ctx.fillStyle = {error:'#ff6b6b', done:'#6bff8f'}[a.state] || '#ffe';
-  ctx.fillText(s, x + 13, yy - 2);
-}
-function drawBubbles(t){
+
+// 气泡：按消息 id 建节、按剩余寿命调透明度；气泡宽度量一次缓在节点上
+const bubbleNodes = new Map();   // key -> {g, rect, tail, line, ts}
+function drawBubbles(){
   const now = Date.now();
   messages = messages.filter(m => now - m.ts < 7000);
+  const alive = new Set();
   for (const m of messages){
-    const from = agents.find(a => a.id === m.from);
-    const to = agents.find(a => a.id === m.to);
-    // 气泡挂在发送者头上（human 的挂在左上角）
-    const pos = from ? slots(agents.length)[agents.indexOf(from)] : {x: 8, y: 34};
-    const age = (now - m.ts) / 1000;
-    ctx.globalAlpha = age > 5.5 ? Math.max(0, (7 - age) / 1.5) : 1;
-    const text = `${m.from_name}: ${m.text}`.slice(0, 26);
-    ctx.font = '7px monospace';
-    const w = ctx.measureText(text).width + 6;
-    ctx.fillStyle = '#fff'; ctx.fillRect(pos.x - 1, pos.y - 26, w, 11);
-    ctx.fillStyle = '#fff'; ctx.fillRect(pos.x + 3, pos.y - 15, 2, 2);
-    ctx.fillStyle = '#111'; ctx.fillText(text, pos.x + 2, pos.y - 18);
-    if (to){ // 接收者画个小箭头提示
-      const tp = slots(agents.length)[agents.indexOf(to)];
-      if (tp){ ctx.strokeStyle = '#7ee'; ctx.beginPath();
-        ctx.moveTo(pos.x + 6, pos.y - 26); ctx.lineTo(tp.x + 6, tp.y - 6); ctx.stroke(); }
+    const key = m.ts + '>' + m.to;
+    alive.add(key);
+    const pos = slotOf(m.from) || {x: 8, y: 34};
+    let n = bubbleNodes.get(key);
+    if (!n){
+      const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+      const text = `${m.from_name}: ${m.text}`.slice(0, 26);
+      g.innerHTML =
+        `<text x="2" y="-17" font-size="7" fill="#111"></text>` +
+        `<polygon points="3,-15 5,-15 4,-13" fill="#fff"/>`;
+      const tx = g.querySelector('text');
+      tx.textContent = text;
+      bubblesG.appendChild(g);
+      // 先填字再量宽，rect 插到字底下当底板
+      const w = tx.getComputedTextLength() + 6;
+      const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      rect.setAttribute('x', -1); rect.setAttribute('y', -26);
+      rect.setAttribute('width', w); rect.setAttribute('height', 11);
+      rect.setAttribute('fill', '#fff');
+      g.insertBefore(rect, g.firstChild);
+      // 接收者画条小箭头（端点每帧更新，工位重排时跟着走）
+      let line = null;
+      if (slotOf(m.to)){
+        line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        line.setAttribute('stroke', '#7ee');
+        line.setAttribute('stroke-width', 1);
+        line.setAttribute('vector-effect', 'non-scaling-stroke');
+        g.appendChild(line);
+      }
+      n = {g, rect, line, tx};
+      bubbleNodes.set(key, n);
     }
-    ctx.globalAlpha = 1;
+    // 位置与箭头每帧刷新：工人进出导致工位重排时，气泡跟着搬家
+    n.g.setAttribute('transform', `translate(${pos.x} ${pos.y})`);
+    if (n.line){
+      const tp = slotOf(m.to);
+      n.line.setAttribute('x1', pos.x + 6); n.line.setAttribute('y1', pos.y - 26);
+      n.line.setAttribute('x2', tp.x + 6);  n.line.setAttribute('y2', tp.y - 6);
+    }
+    const age = (now - m.ts) / 1000;
+    n.g.setAttribute('opacity', age > 5.5 ? Math.max(0, (7 - age) / 1.5) : 1);
   }
+  for (const [key, n] of bubbleNodes)
+    if (!alive.has(key)){ n.g.remove(); bubbleNodes.delete(key); }
 }
 renderList();
+layout();
 connect();
-requestAnimationFrame(draw);
+requestAnimationFrame(frame);
 </script>
 </body>
 </html>
