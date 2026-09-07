@@ -9,6 +9,11 @@ use clawpit::{discovery_loop, router, Hub, DEFAULT_PORT, DEFAULT_SCAN_INTERVAL};
 /// - `CLAWPIT_PROC_ROOT`：proc 根目录，默认 /proc（测试用）
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // `clawpit mcp`：不启 daemon，打印把 clawpit-mcp 接入各 agent CLI 的现成配置。
+    if std::env::args().nth(1).as_deref() == Some("mcp") {
+        print_mcp_guide();
+        return Ok(());
+    }
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -43,4 +48,24 @@ async fn main() -> anyhow::Result<()> {
 
 fn home_dir() -> String {
     std::env::var("HOME").unwrap_or_else(|_| ".".into())
+}
+
+/// `clawpit mcp`：一键接入指引。mcp 路径取当前可执行文件的同级 clawpit-mcp
+/// （cargo build 后两者总在一起）；找不到就退化为裸名，交给 PATH。
+fn print_mcp_guide() {
+    let mcp = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("clawpit-mcp")))
+        .filter(|p| p.exists())
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "clawpit-mcp".into());
+    println!("把 clawpit 接入你的 agent CLI（配一次，新开的会话即有 clawpit_list/send/inbox）：\n");
+    println!("  Claude Code:");
+    println!("    claude mcp add clawpit -- {mcp}\n");
+    println!("  Codex (~/.codex/config.toml):");
+    println!("    [mcp_servers.clawpit]\n    command = \"{mcp}\"\n");
+    println!("  通用 MCP（stdio）:");
+    println!("    {{\"mcpServers\":{{\"clawpit\":{{\"command\":\"{mcp}\"}}}}}}\n");
+    println!("注意：收件箱是拉模式——agent 调 clawpit_inbox 才取到信。要消息即发即达，");
+    println!("把终端跑在 tmux 里（send-keys 注入）或用「招工」让 hub 直管（stdin 注入）。");
 }
