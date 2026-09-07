@@ -2,11 +2,12 @@
 
 use std::{net::SocketAddr, path::PathBuf};
 
-use clawpit::{discovery_loop, router, Hub, DEFAULT_PORT, DEFAULT_SCAN_INTERVAL};
+use clawpit::{discovery_loop, router, DEFAULT_PORT, DEFAULT_SCAN_INTERVAL};
 
 /// 环境变量：
 /// - `CLAWPIT_PORT`：监听端口，默认 7664
 /// - `CLAWPIT_PROC_ROOT`：proc 根目录，默认 /proc（测试用）
+/// - `CLAWPIT_HOME`：持久化目录，默认 ~/.clawpit（events.jsonl 事件日志）
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // `clawpit mcp`：不启 daemon，打印把 clawpit-mcp 接入各 agent CLI 的现成配置。
@@ -31,7 +32,18 @@ async fn main() -> anyhow::Result<()> {
         std::env::var("CLAWPIT_CLAUDE_HOME").unwrap_or_else(|_| format!("{}/.claude", home_dir())),
     );
 
-    let hub = Hub::new();
+    // 持久化：CLAWPIT_HOME 覆盖（测试用），默认 ~/.clawpit；
+    // 打开失败（磁盘/权限）降级为内存模式，本地工具不因小事故罢工
+    let store_dir = PathBuf::from(
+        std::env::var("CLAWPIT_HOME").unwrap_or_else(|_| format!("{}/.clawpit", home_dir())),
+    );
+    let hub = match clawpit::Hub::with_persistence(&store_dir) {
+        Ok(h) => h,
+        Err(e) => {
+            tracing::warn!(error = %e, home = %store_dir.display(), "持久化不可用，降级为内存模式");
+            clawpit::Hub::new()
+        }
+    };
     tokio::spawn(discovery_loop(
         proc_root,
         claude_home,

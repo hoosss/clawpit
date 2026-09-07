@@ -96,6 +96,9 @@ pub struct ChatMessage {
     /// 接收者 agent id；发给人的消息为 "human"（只上墙不投递）
     pub to: String,
     pub text: String,
+    /// 发送时刻（epoch 毫秒）。旧事件无此字段时为 0；持久化与排序用。
+    #[serde(default)]
+    pub ts: u64,
 }
 
 /// 车间里的一只 worker。

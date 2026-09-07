@@ -121,6 +121,18 @@ impl Registry {
         Ok(a.clone())
     }
 
+    /// 直接落一个房间（重放/持久化用，不走差量校验）。同步推进 id 计数器。
+    pub fn upsert_room(&mut self, room: RoomInfo) {
+        if let Some(n) = room
+            .id
+            .strip_prefix("rm-")
+            .and_then(|s| s.parse::<u64>().ok())
+        {
+            self.next_room = self.next_room.max(n);
+        }
+        self.rooms.insert(room.id.clone(), room);
+    }
+
     /// 供 Spawn/Post/Mailbox driver 直接增改自己来源的条目。
     pub fn upsert(&mut self, agent: AgentInfo) {
         self.agents.insert(agent.id.clone(), agent);

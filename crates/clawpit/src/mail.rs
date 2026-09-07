@@ -94,6 +94,10 @@ impl MailManager {
             from_name,
             to: to.to_string(),
             text: text.trim().to_string(),
+            ts: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0),
         };
 
         let delivery = if to != HUMAN {
@@ -123,7 +127,7 @@ impl MailManager {
             Delivery::Wall
         };
 
-        let _ = self.state.tx.send(SceneEvent::Chat {
+        self.state.emit(SceneEvent::Chat {
             message: msg.clone(),
         });
         Ok((msg, delivery))
@@ -148,8 +152,13 @@ impl MailManager {
         }
         let ev = self.state.registry.write().await.set_title(id, Some(title));
         if let Some(ev) = ev {
-            let _ = self.state.tx.send(ev);
+            self.state.emit(ev);
         }
+    }
+
+    /// 重放后接续 msg 序号（Store 探测日志里最大的 msg-N），防重启后 id 撞车。
+    pub fn init_msg_counter(&self, seen_max: u64) {
+        self.next.fetch_max(seen_max + 1, Ordering::SeqCst);
     }
 
     /// 按 pid 取收件箱（取走即清）。返回 (匹配到的 agent, 消息)。

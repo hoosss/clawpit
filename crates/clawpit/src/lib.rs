@@ -6,6 +6,7 @@ pub mod observe;
 pub mod registry;
 pub mod scanner;
 pub mod spawn;
+pub mod store;
 pub mod tmux;
 
 use std::{path::PathBuf, sync::Arc, time::Duration};
@@ -34,6 +35,8 @@ pub const DEFAULT_SCAN_INTERVAL: Duration = Duration::from_secs(2);
 pub struct AppState {
     pub tx: broadcast::Sender<SceneEvent>,
     pub registry: Arc<RwLock<Registry>>,
+    /// 事件日志（开了就随 emit 落盘 + 重放续号）；测试默认 None 保持无 IO。
+    pub store: Option<Arc<store::Store>>,
 }
 
 impl AppState {
@@ -42,7 +45,16 @@ impl AppState {
         Self {
             tx,
             registry: Arc::new(RwLock::new(Registry::new())),
+            store: None,
         }
+    }
+
+    /// 广播一条场景事件；开了持久化就顺手落盘。
+    pub fn emit(&self, ev: SceneEvent) {
+        if let Some(s) = &self.store {
+            s.record(&ev);
+        }
+        let _ = self.tx.send(ev);
     }
 }
 
@@ -66,6 +78,23 @@ impl Hub {
         let spawn = SpawnManager::new(state.clone());
         let mail = MailManager::new(state.clone(), spawn.clone());
         Self { mail, spawn, state }
+    }
+
+    /// 带持久化的 hub：重放 `<dir>/events.jsonl` 重建房间结构与最近聊天，
+    /// 之后所有场景事件随广播落盘。bin 用；测试默认走 `new()`（无 IO）。
+    pub fn with_persistence(dir: &std::path::Path) -> anyhow::Result<Self> {
+        let (tx, _) = broadcast::channel(64);
+        let mut registry = Registry::new();
+        let store = Arc::new(store::Store::open(dir, &mut registry)?);
+        let state = AppState {
+            tx,
+            registry: Arc::new(RwLock::new(registry)),
+            store: Some(store.clone()),
+        };
+        let spawn = SpawnManager::new(state.clone());
+        let mail = MailManager::new(state.clone(), spawn.clone());
+        mail.init_msg_counter(store.next_msg.load(std::sync::atomic::Ordering::SeqCst));
+        Ok(Self { mail, spawn, state })
     }
 }
 
@@ -147,7 +176,7 @@ pub async fn discovery_loop(
             events.extend(reg.apply_titles(&titles));
         }
         for ev in events {
-            let _ = state.tx.send(ev);
+            state.emit(ev);
         }
     }
 }
@@ -267,10 +296,8 @@ async fn create_room(
         .await
         .create_room(&req.name)
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-    let _ = hub
-        .state
-        .tx
-        .send(SceneEvent::RoomUpsert { room: room.clone() });
+    hub.state
+        .emit(SceneEvent::RoomUpsert { room: room.clone() });
     Ok(Json(room))
 }
 
@@ -292,10 +319,8 @@ async fn update_room(
         .await
         .update_room(&id, req.name.as_deref(), req.archived)
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-    let _ = hub
-        .state
-        .tx
-        .send(SceneEvent::RoomUpsert { room: room.clone() });
+    hub.state
+        .emit(SceneEvent::RoomUpsert { room: room.clone() });
     Ok(Json(room))
 }
 
@@ -311,7 +336,7 @@ async fn delete_room(
         .delete_room(&id)
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
     for ev in events {
-        let _ = hub.state.tx.send(ev);
+        hub.state.emit(ev);
     }
     Ok("ok")
 }
@@ -333,7 +358,7 @@ async fn move_agent(
         .await
         .move_agent(&id, &req.to)
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-    let _ = hub.state.tx.send(SceneEvent::AgentUpsert {
+    hub.state.emit(SceneEvent::AgentUpsert {
         agent: agent.clone(),
     });
     Ok(Json(agent))

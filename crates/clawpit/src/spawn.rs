@@ -120,7 +120,7 @@ impl SpawnManager {
 
         // ① 先登记 + 广播 Working（快退进程的终态必须落在其后）
         self.state.registry.write().await.upsert(agent.clone());
-        let _ = self.state.tx.send(SceneEvent::AgentUpsert {
+        self.state.emit(SceneEvent::AgentUpsert {
             agent: agent.clone(),
         });
 
@@ -182,10 +182,8 @@ impl SpawnManager {
             let _ = s.child.lock().unwrap().kill();
         }
         self.state.registry.write().await.remove(id);
-        let _ = self
-            .state
-            .tx
-            .send(SceneEvent::AgentGone { id: id.to_string() });
+        self.state
+            .emit(SceneEvent::AgentGone { id: id.to_string() });
         Ok(())
     }
 
@@ -194,7 +192,7 @@ impl SpawnManager {
         let mut reg = self.state.registry.write().await;
         if reg.set_state(id, state) {
             if let Some(agent) = reg.get(id).cloned() {
-                let _ = self.state.tx.send(SceneEvent::AgentUpsert { agent });
+                self.state.emit(SceneEvent::AgentUpsert { agent });
             }
         }
     }
