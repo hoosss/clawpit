@@ -102,25 +102,143 @@ pub fn read_state(proc_root: &Path, pid: u32, claude_home: &Path) -> AgentState 
     read_observation(proc_root, pid, claude_home).state
 }
 
+// ── Codex 适配：rollout 日志（~/.codex/sessions/**/*.jsonl） ──────────────
+
+/// 找 codex 会话日志：fd 链接直连（codex 保持 rollout 文件打开）。
+/// 刻意不做 cwd/最新文件推导——codex 目录按日期/uuid 组织，与进程对不上号，
+/// 宁可观察不到也不能把别人的会话错认成它。
+pub fn resolve_codex_transcript(proc_root: &Path, pid: u32) -> Option<PathBuf> {
+    let fd_dir = proc_root.join(pid.to_string()).join("fd");
+    let entries = std::fs::read_dir(&fd_dir).ok()?;
+    for e in entries.flatten() {
+        let Ok(target) = std::fs::read_link(e.path()) else {
+            continue;
+        };
+        let s = target.to_string_lossy();
+        if s.ends_with(".jsonl") && s.contains(".codex") {
+            return Some(if target.is_absolute() {
+                target
+            } else {
+                e.path().parent().unwrap().join(&target)
+            });
+        }
+    }
+    None
+}
+
+/// codex rollout 事件模型（response_item）：
+/// - payload.type=message role=user（input_text）→ 刚收到输入：Thinking
+/// - payload.type=function_call / custom_tool_call → 调工具干活：Working
+/// - payload.type=message role=assistant（output_text）→ 说完话等人：WaitingInput
+/// - reasoning / turn_context / session_meta / event_msg 跳过，往更早找
+///
+/// 标题：最后一个真人 input_text（过滤环境注入/指令标签）。
+pub fn parse_codex(tail: &str) -> Observation {
+    for line in tail.lines().rev() {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if v.get("type").and_then(|x| x.as_str()) != Some("response_item") {
+            continue;
+        }
+        let payload_type = v.pointer("/payload/type").and_then(|x| x.as_str());
+        let role = v.pointer("/payload/role").and_then(|x| x.as_str());
+        match (payload_type, role) {
+            (Some("function_call"), _) | (Some("custom_tool_call"), _) => {
+                return Observation {
+                    state: AgentState::Working,
+                    title: None,
+                }
+            }
+            (Some("message"), Some("user")) => {
+                let text = codex_text_blocks(&v, "input_text");
+                if let Some(t) = text.filter(|t| is_human_prompt(t)) {
+                    return Observation {
+                        state: AgentState::Thinking,
+                        title: Some(clean_title(&t)),
+                    };
+                }
+                // 环境注入等非人话 user 行：继续往更早找
+            }
+            (Some("message"), Some("assistant")) => {
+                return Observation {
+                    state: AgentState::WaitingInput,
+                    title: None,
+                }
+            }
+            _ => {}
+        }
+    }
+    Observation::default()
+}
+
+/// 拼 codex message content 里指定类型块的文本。
+fn codex_text_blocks(v: &serde_json::Value, block_type: &str) -> Option<String> {
+    let texts: Vec<&str> = v
+        .pointer("/payload/content")?
+        .as_array()?
+        .iter()
+        .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some(block_type))
+        .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+        .collect();
+    if texts.is_empty() {
+        None
+    } else {
+        Some(texts.join(" "))
+    }
+}
+
+/// 真人输入判定：codex 会往 user 通道塞 <user_instructions>/<environment_context>
+/// 这类系统注入，跟 claude 的斜杠命令一样不算任务。
+fn is_human_prompt(t: &str) -> bool {
+    let t = t.trim();
+    !t.is_empty() && !t.starts_with('<') && !t.starts_with("# ")
+}
+
+/// 标题截断（与 claude 侧同规：含省略号共 40 字符）。
+fn clean_title(s: &str) -> String {
+    let t = s.trim();
+    let mut out: String = t.chars().take(39).collect();
+    if t.chars().count() > 39 {
+        out.push('…');
+    }
+    out
+}
+
+/// codex 版 read_observation。
+pub fn read_codex_observation(proc_root: &Path, pid: u32) -> Observation {
+    let Some(path) = resolve_codex_transcript(proc_root, pid) else {
+        return Observation::default();
+    };
+    let Some(tail) = tail_utf8(&path) else {
+        return Observation::default();
+    };
+    parse_codex(&tail)
+}
+
 /// 一次 tail 同时拿状态和标题（定位不到 = Unknown / None）。
 pub fn read_observation(proc_root: &Path, pid: u32, claude_home: &Path) -> Observation {
     let Some(path) = resolve_transcript(proc_root, pid, claude_home) else {
         return Observation::default();
     };
-    let Ok(mut f) = std::fs::File::open(&path) else {
+    let Some(tail) = tail_utf8(&path) else {
         return Observation::default();
     };
-    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    Observation {
+        state: parse_state(&tail),
+        title: parse_title(&tail),
+    }
+}
+
+/// 读文件尾部 8KB 并对齐到行首（窗口起点可能落在多字节 UTF-8 中间，
+/// 先按字节读再 lossy 解码，否则中文会话的 tail 大概率整窗作废）。
+fn tail_utf8(path: &Path) -> Option<String> {
+    let mut f = std::fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
     let start = len.saturating_sub(8192);
-    if f.seek(SeekFrom::Start(start)).is_err() {
-        return Observation::default();
-    }
-    // 按字节读，窗口起点可能落在多字节 UTF-8 中间——先对齐到行首再 lossy 解码，
-    // 否则中文会话的 tail 大概率整窗作废（read_to_string 直接报错）
+    f.seek(SeekFrom::Start(start)).ok()?;
     let mut bytes = Vec::new();
-    if f.take(8192 + 16).read_to_end(&mut bytes).is_err() {
-        return Observation::default();
-    }
+    f.take(8192 + 16).read_to_end(&mut bytes).ok()?;
     if start > 0 {
         match bytes.iter().position(|&b| b == b'\n') {
             Some(nl) => {
@@ -129,11 +247,7 @@ pub fn read_observation(proc_root: &Path, pid: u32, claude_home: &Path) -> Obser
             None => bytes.clear(), // 窗口内没有完整行，放弃
         }
     }
-    let tail = String::from_utf8_lossy(&bytes);
-    Observation {
-        state: parse_state(&tail),
-        title: parse_title(&tail),
-    }
+    Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 /// 观察结果：真实状态 + 会话标题（最后一个真人输入，截断到一行）。
@@ -345,6 +459,60 @@ mod tests {
             read_state(dir.path(), 4242, &home),
             AgentState::Working,
             "窗口起点落在 UTF-8 字符中间也不应作废整窗"
+        );
+    }
+
+    #[test]
+    fn codex_state_and_title_from_rollout() {
+        let user = r#"{"timestamp":"t1","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"修 codex 适配"}]}}"#;
+        let env_inject = r#"{"timestamp":"t0","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>cwd=/tmp</environment_context>"}]}}"#;
+        let tool = r#"{"timestamp":"t2","type":"response_item","payload":{"type":"function_call","name":"shell"}}"#;
+        let asst = r#"{"timestamp":"t3","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}}"#;
+        let meta = r#"{"timestamp":"t4","type":"turn_context","payload":{}}"#;
+
+        // user 之后调工具 → Working
+        assert_eq!(
+            parse_codex(&format!("{user}\n{tool}\n")).state,
+            AgentState::Working
+        );
+        // 最后是真人 user → Thinking + 标题
+        let o = parse_codex(user);
+        assert_eq!(o.state, AgentState::Thinking);
+        assert_eq!(o.title.as_deref(), Some("修 codex 适配"));
+        // 环境注入的 user 行不算人话，往更早找
+        let o = parse_codex(&format!("{user}\n{env_inject}"));
+        assert_eq!(o.title.as_deref(), Some("修 codex 适配"));
+        // assistant 收尾（turn_context 跳过）→ WaitingInput
+        assert_eq!(
+            parse_codex(&format!("{tool}\n{asst}\n{meta}")).state,
+            AgentState::WaitingInput
+        );
+        assert_eq!(parse_codex("").state, AgentState::Unknown);
+    }
+
+    #[test]
+    fn codex_resolves_via_fd_symlink_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir
+            .path()
+            .join(".codex/sessions/2026/09/07/rollout-x.jsonl");
+        std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+        std::fs::write(
+            &log,
+            r#"{"timestamp":"t1","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hi"}]}}"#,
+        )
+        .unwrap();
+        let fd = dir.path().join("31415/fd");
+        std::fs::create_dir_all(&fd).unwrap();
+        std::os::unix::fs::symlink(&log, fd.join("3")).unwrap();
+        assert_eq!(
+            read_codex_observation(dir.path(), 31415).state,
+            AgentState::WaitingInput
+        );
+        // 没有 fd 链接 → Unknown（不做最新文件兜底：codex 目录与进程对不上号）
+        assert_eq!(
+            read_codex_observation(dir.path(), 999).state,
+            AgentState::Unknown
         );
     }
 }

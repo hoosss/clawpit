@@ -143,24 +143,29 @@ pub async fn discovery_loop(
         let (mut events, discovered) = {
             let mut reg = state.registry.write().await;
             let events = reg.apply_discovered(found);
-            let discovered: Vec<(String, u32)> = reg
+            let discovered: Vec<(String, u32, clawpit_scene::Provider)> = reg
                 .snapshot()
                 .iter()
                 .filter_map(|a| match (a.provider, &a.source) {
                     (
-                        clawpit_scene::Provider::ClaudeCode,
+                        p @ (clawpit_scene::Provider::ClaudeCode | clawpit_scene::Provider::Codex),
                         clawpit_scene::Source::Discovered { pid },
-                    ) => Some((a.id.clone(), *pid)),
+                    ) => Some((a.id.clone(), *pid, p)),
                     _ => None,
                 })
                 .collect();
             (events, discovered)
         };
-        // 观察站：给 discovered 的 claude 会话读真实状态与标题（一次 tail 两得）
+        // 观察站：给 discovered 的 claude/codex 会话读真实状态与标题（一次 tail 两得）
         let observations: Vec<(String, observe::Observation)> = discovered
             .into_iter()
-            .map(|(id, pid)| {
-                let o = observe::read_observation(&proc_root, pid, &claude_home);
+            .map(|(id, pid, provider)| {
+                let o = match provider {
+                    clawpit_scene::Provider::Codex => {
+                        observe::read_codex_observation(&proc_root, pid)
+                    }
+                    _ => observe::read_observation(&proc_root, pid, &claude_home),
+                };
                 (id, o)
             })
             .collect();
