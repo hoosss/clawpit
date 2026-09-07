@@ -9,6 +9,12 @@
   #app{display:flex;height:100%}
   #stage{flex:1;position:relative;min-width:0;background:#1a1c2c}
   #cv{width:100%;height:100%;display:block;cursor:crosshair}
+  #rooms{position:absolute;top:36px;left:8px;display:flex;gap:6px;z-index:5;flex-wrap:wrap;max-width:70%}
+  .room{background:rgba(38,41,74,.85);border:1px solid #3a3d5f;padding:3px 10px;border-radius:3px;
+    font-size:11px;cursor:pointer;color:#cfd3ff;letter-spacing:1px}
+  .room:hover{background:#31355c}
+  .room.on{background:#f7d51d;color:#111;border-color:#f7d51d;font-weight:bold}
+  .room.add{color:#f7d51d;border-style:dashed}
   text{font-family:ui-monospace,"Cascadia Mono",Consolas,"SF Mono",Menlo,"Courier New",monospace}
   .worker{cursor:pointer}
   .worker:hover{filter:brightness(1.18)}
@@ -56,6 +62,7 @@
       <g id="workers"></g>
       <g id="bubbles"></g>
     </svg>
+    <div id="rooms"></div>
   </div>
   <div id="side">
     <div id="hdr">▶ clawpit 车间</div>
@@ -82,10 +89,12 @@ const PROVIDER_COLORS = {
 const STATE_TEXT = {
   unknown:'？', thinking:'想', working:'干', waiting_input:'等', done:'完', error:'错'
 };
-let agents = [];          // [{id,provider,name,state,source}]
+let agents = [];          // [{id,provider,name,state,source,room,title}]
 let messages = [];        // [{id,from,from_name,to,text,ts}]
 let selected = null;
 let connected = false;
+let rooms = [{id:'lobby', name:'大厅', archived:false}];   // 快照会带全量
+let currentRoom = 'lobby';
 
 // ── WS：同一场景协议 ───────────────────────────────────────────
 let ws, retry = 1000;
@@ -101,8 +110,11 @@ function connect(){
     const ev = JSON.parse(e.data);
     if (ev.type === 'snapshot'){
       agents = ev.agents;
+      if (ev.rooms && ev.rooms.length) rooms = ev.rooms;
       // 快照是全量替换：选中项若已消失必须失效，否则悬空 id 会打到 400
       if (selected && !agents.some(a => a.id === selected)) selected = null;
+      if (!rooms.some(r => r.id === currentRoom)) currentRoom = 'lobby';
+      renderRooms();
     }
     else if (ev.type === 'agent_upsert'){
       const i = agents.findIndex(a => a.id === ev.agent.id);
@@ -113,6 +125,17 @@ function connect(){
       agents = agents.filter(a => a.id !== ev.id);
       if (selected === ev.id) selected = null;
     }
+    else if (ev.type === 'room_upsert'){
+      const i = rooms.findIndex(r => r.id === ev.room.id);
+      i >= 0 ? rooms[i] = ev.room : rooms.push(ev.room);
+      rooms.sort((a,b) => a.id < b.id ? -1 : 1);
+      renderRooms();
+    }
+    else if (ev.type === 'room_gone'){
+      rooms = rooms.filter(r => r.id !== ev.id);
+      if (currentRoom === ev.id) currentRoom = 'lobby';   // 成员 upsert 随后会到
+      renderRooms();
+    }
     else if (ev.type === 'chat'){ ev.message.ts = Date.now(); messages.push(ev.message); trimChat(); }
     // chat 不动工人 DOM（重建会打断 :hover），只有名单变化才重建
     ev.type === 'chat' ? renderList() : rebuildWorkers();
@@ -121,20 +144,71 @@ function connect(){
 function setStatus(s){ document.getElementById('status').textContent = s; }
 function send(cm){ if (ws && ws.readyState === 1) ws.send(JSON.stringify(cm)); }
 
+// ── 房间视图 ───────────────────────────────────────────────────
+function roomAgents(){
+  return agents.filter(a => (a.room || 'lobby') === currentRoom);
+}
+function roomName(id){
+  const r = rooms.find(r => r.id === id);
+  return r ? r.name : id;
+}
+function renderRooms(){
+  renderSign();
+  const box = document.getElementById('rooms');
+  box.innerHTML = '';
+  for (const r of rooms){
+    if (r.archived) continue;
+    const d = document.createElement('div');
+    d.className = 'room' + (r.id === currentRoom ? ' on' : '');
+    const n = agents.filter(a => (a.room || 'lobby') === r.id).length;
+    d.textContent = `${r.name}·${n}`;
+    d.title = `切换到「${r.name}」`;
+    d.onclick = () => { currentRoom = r.id; renderRooms(); rebuildWorkers(); renderList(); };
+    box.appendChild(d);
+  }
+  const add = document.createElement('div');
+  add.className = 'room add';
+  add.textContent = '＋';
+  add.title = '新建房间';
+  add.onclick = async () => {
+    const name = prompt('新房间名字：');
+    if (!name || !name.trim()) return;
+    try {
+      await api('POST', '/rooms', {name: name.trim()});
+      // room_upsert 事件到达后 renderRooms 自动出新 chip
+    } catch(e){ setStatus('建房失败：' + e.message); }
+  };
+  box.appendChild(add);
+}
+
+// 把 agent 挪去（按名字找）房间；房间不存在就先建——右键工人即可分房
+async function moveByName(agentId, name){
+  const trimmed = (name || '').trim();
+  if (!trimmed) return;
+  try {
+    let room = rooms.find(r => r.name === trimmed);
+    if (!room) room = await api('POST', '/rooms', {name: trimmed});
+    await api('POST', `/agents/${agentId}/move`, {to: room.id});
+    setStatus(`已把 ${agentId} 移入「${room.name}」`);
+  } catch(e){ setStatus('移房失败：' + e.message); }
+}
+
 // ── 侧栏 ──────────────────────────────────────────────────────
 function renderList(){
   const box = document.getElementById('agents');
   box.innerHTML = '';
-  if (!agents.length){
-    box.innerHTML = '<div style="padding:10px;color:#667">车间空无一人。<br>点「招工」或在终端里跑一个 claude。</div>';
+  const shown = roomAgents();
+  if (!shown.length){
+    box.innerHTML = `<div style="padding:10px;color:#667">「${esc(roomName(currentRoom))}」空无一人。<br>点「招工」招进本房，或右键小人/名单把它移进来。</div>`;
     return;
   }
-  for (const a of agents){
+  for (const a of shown){
     const d = document.createElement('div');
     d.className = 'agent' + (a.id === selected ? ' sel' : '');
     d.innerHTML = `<span class="chip" style="background:${PROVIDER_COLORS[a.provider]||'#888'}"></span>
       <span class="acol"><span class="aname">${esc(a.name)}</span><span class="astate">${STATE_TEXT[a.state]||esc(a.state)}</span>${a.title ? `<span class="atitle">${esc(a.title)}</span>` : ''}</span>`;
     d.onclick = () => { selected = a.id; renderList(); };
+    d.oncontextmenu = e => { e.preventDefault(); const n = prompt(`把 ${a.name} 移入房间（名字，不存在则新建）：`); moveByName(a.id, n); };
     box.appendChild(d);
   }
 }
@@ -184,8 +258,15 @@ async function speak(){
 }
 document.getElementById('b-send').onclick = speak;
 document.getElementById('msg').addEventListener('keydown', e => { if (e.key==='Enter') speak(); });
-document.getElementById('b-spawn').onclick = () =>
-  api('POST', '/agents', {provider:'claude_code'}).catch(e => setStatus('招工失败：'+e.message));
+document.getElementById('b-spawn').onclick = async () => {
+  try {
+    const a = await api('POST', '/agents', {provider:'claude_code'});
+    // 招进当前房（server 默认落大厅，客户端补一步移动）
+    if (currentRoom !== 'lobby')
+      await api('POST', `/agents/${a.id}/move`, {to: currentRoom}).catch(() => {});
+    setStatus(`已招 ${a.id} 进「${roomName(currentRoom)}」`);
+  } catch(e){ setStatus('招工失败：'+e.message); }
+};
 document.getElementById('b-stop').onclick = () => {
   if (!selected) return setStatus('先选中要解雇的 worker');
   api('DELETE', '/agents/' + selected).catch(e => setStatus('解雇失败：'+e.message));
@@ -226,20 +307,23 @@ function slots(n){
   return out;
 }
 function slotOf(id){
-  const i = agents.findIndex(a => a.id === id);
-  return i < 0 ? null : slots(agents.length)[i];
+  const ra = roomAgents();
+  const i = ra.findIndex(a => a.id === id);
+  return i < 0 ? null : slots(ra.length)[i];
 }
 
-// worker 结构只在名单变化时重建（扫描会周期性推 upsert，重建会打断 :hover）；
+// worker 结构只在（当前房的）名单变化时重建（扫描会周期性推 upsert，重建会打断 :hover）；
 // 每帧只动 transform/手臂/选框，不碰 DOM 结构
 let workersKey = '';
 function rebuildWorkers(){
   renderList();
-  const key = agents.map(a => a.id).join(',');
+  renderRooms();
+  const ra = roomAgents();
+  const key = currentRoom + '|' + ra.map(a => a.id).join(',');
   if (key === workersKey) return;   // 名单没变：状态由 frame() 逐帧读，侧栏已刷新
   workersKey = key;
   workersG.innerHTML = '';
-  workerEls = agents.map(a => {
+  workerEls = ra.map(a => {
     const c = PROVIDER_COLORS[a.provider] || '#9aa0b0';
     const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
     g.setAttribute('class', 'worker');
@@ -262,6 +346,12 @@ function rebuildWorkers(){
     // 名牌优先显示任务标题（一眼分辨每只小人在干什么），没有才回退 id
     g.querySelector('.name').textContent = (a.title || a.name).slice(0, 12);
     g.addEventListener('click', () => { selected = a.id; renderList(); });
+    // 右键小人 → 移房（按名字，不存在则新建）
+    g.addEventListener('contextmenu', e => {
+      e.preventDefault();
+      const n = prompt(`把 ${a.name} 移入房间（名字，不存在则新建）：`);
+      moveByName(a.id, n);
+    });
     workersG.appendChild(g);
     return { id: a.id, g,
       armL: g.querySelector('.armL'), armR: g.querySelector('.armR'),
@@ -274,8 +364,9 @@ const STATE_FILL = {error:'#ff6b6b', done:'#6bff8f'};
 
 // 每帧：浮沉/挥臂走亚像素（旧 canvas 版取整，一格一格跳）
 function frame(t){
-  const ss = slots(agents.length);
-  agents.forEach((a, i) => {
+  const ra = roomAgents();
+  const ss = slots(ra.length);
+  ra.forEach((a, i) => {
     const el = workerEls[i];
     if (!el) return;
     const s = ss[i];
@@ -317,8 +408,14 @@ const bubbleNodes = new Map();   // key -> {g, rect, tail, line, ts}
 function drawBubbles(){
   const now = Date.now();
   messages = messages.filter(m => now - m.ts < 7000);
+  // 气泡按房间归属展示：发送者或接收者在本房才上墙（human 的消息挂在接收者房间）
+  const inRoom = id => {
+    const a = agents.find(x => x.id === id);
+    return a && (a.room || 'lobby') === currentRoom;
+  };
   const alive = new Set();
   for (const m of messages){
+    if (!inRoom(m.from) && !inRoom(m.to)) continue;
     const key = m.ts + '>' + m.to;
     alive.add(key);
     const pos = slotOf(m.from) || {x: 8, y: 34};
@@ -364,6 +461,11 @@ function drawBubbles(){
   for (const [key, n] of bubbleNodes)
     if (!alive.has(key)){ n.g.remove(); bubbleNodes.delete(key); }
 }
+function renderSign(){
+  document.getElementById('sign').textContent = 'CLAWPIT PIT CREW · ' + roomName(currentRoom);
+}
+renderRooms();
+renderSign();
 renderList();
 layout();
 connect();
