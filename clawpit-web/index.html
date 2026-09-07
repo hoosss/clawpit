@@ -15,6 +15,15 @@
   .room:hover{background:#31355c}
   .room.on{background:#f7d51d;color:#111;border-color:#f7d51d;font-weight:bold}
   .room.add{color:#f7d51d;border-style:dashed}
+  #archive{position:absolute;top:60px;right:12px;bottom:12px;width:340px;z-index:10;
+    background:rgba(18,19,31,.96);border:2px solid #2a2c3f;display:flex;flex-direction:column}
+  #archive[hidden]{display:none}
+  #archive-head{display:flex;justify-content:space-between;align-items:center;padding:8px 10px;
+    color:#f7d51d;border-bottom:2px solid #2a2c3f;letter-spacing:1px;font-size:12px}
+  #archive-close{flex:none;width:auto;padding:3px 10px}
+  #archive-list{overflow-y:auto;padding:8px;font-size:11px;line-height:1.5}
+  .hm{margin-bottom:7px}
+  .hm .meta{color:#8890b0;font-size:10px}
   text{font-family:ui-monospace,"Cascadia Mono",Consolas,"SF Mono",Menlo,"Courier New",monospace}
   .worker{cursor:pointer}
   .worker:hover{filter:brightness(1.18)}
@@ -63,6 +72,10 @@
       <g id="bubbles"></g>
     </svg>
     <div id="rooms"></div>
+    <div id="archive" hidden>
+      <div id="archive-head"><span id="archive-title">档案</span><button id="archive-close">✕</button></div>
+      <div id="archive-list"></div>
+    </div>
   </div>
   <div id="side">
     <div id="hdr">▶ clawpit 车间</div>
@@ -74,6 +87,7 @@
         <button id="b-send">说话</button>
         <button id="b-spawn">招工</button>
         <button id="b-stop">解雇</button>
+        <button id="b-hist">档案</button>
       </div>
     </div>
     <div id="status">connecting…</div>
@@ -271,6 +285,30 @@ document.getElementById('b-stop').onclick = () => {
   if (!selected) return setStatus('先选中要解雇的 worker');
   api('DELETE', '/agents/' + selected).catch(e => setStatus('解雇失败：'+e.message));
 };
+
+// ── 会话档案：选中 worker 的完整收发历史（7 秒气泡的补充，持久累积） ─────
+const archiveEl = document.getElementById('archive');
+async function openArchive(){
+  if (!selected){ setStatus('先选中一只 worker 再看档案'); return; }
+  const a = agents.find(x => x.id === selected);
+  document.getElementById('archive-title').textContent =
+    '档案 · ' + (a ? (a.title || a.name) : selected);
+  try {
+    const hist = await api('GET', `/agents/${selected}/history?limit=100`);
+    const list = document.getElementById('archive-list');
+    list.innerHTML = hist.length ? '' : '<div style="padding:8px;color:#667">暂无历史——档案随聊天自动累积（重启也保留最近 200 条）。</div>';
+    for (const m of hist.slice().reverse()){   // 最新在最上
+      const d = document.createElement('div');
+      d.className = 'hm';
+      const time = m.ts ? new Date(m.ts).toLocaleTimeString() : '';
+      d.innerHTML = `<div class="meta">${time} ${esc(m.from_name)}→${esc(m.to==='human'?'你':m.to)}</div><div>${esc(m.text)}</div>`;
+      list.appendChild(d);
+    }
+    archiveEl.hidden = false;
+  } catch(e){ setStatus('取档案失败：'+e.message); }
+}
+document.getElementById('b-hist').onclick = openArchive;
+document.getElementById('archive-close').onclick = () => { archiveEl.hidden = true; };
 
 // ── SVG 矢量车间（viewBox 场景坐标系，几何渲染任意缩放都锐利） ────────
 const svg = document.getElementById('cv'),

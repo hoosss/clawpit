@@ -118,6 +118,7 @@ pub fn router(hub: Hub) -> Router {
         .route("/agents/:id/say", post(say_agent))
         .route("/agents/:id", delete(stop_agent))
         .route("/agents/:id/move", post(move_agent))
+        .route("/agents/:id/history", get(agent_history))
         .route("/rooms", get(list_rooms).post(create_room))
         .route("/rooms/:id", patch(update_room).delete(delete_room))
         .route("/msg", post(send_msg))
@@ -346,6 +347,39 @@ struct MoveRequest {
     to: String,
 }
 
+/// 档案窗口：从事件日志里取该 agent 的收发历史（纯函数，好测）。
+fn history_for(log: Vec<ChatMessage>, id: &str, limit: usize) -> Vec<ChatMessage> {
+    let mut hits: Vec<ChatMessage> = log
+        .into_iter()
+        .filter(|m| m.from == id || m.to == id)
+        .collect();
+    let overflow = hits.len().saturating_sub(limit);
+    if overflow > 0 {
+        hits.drain(..overflow); // 保留最近的 limit 条，时间正序给渲染端
+    }
+    hits
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct HistoryQuery {
+    limit: Option<usize>,
+}
+
+async fn agent_history(
+    State(hub): State<Hub>,
+    Path(id): Path<String>,
+    Query(q): Query<HistoryQuery>,
+) -> Json<Vec<ChatMessage>> {
+    let limit = q.limit.unwrap_or(50).min(store::CHAT_KEEP);
+    let log = hub
+        .state
+        .store
+        .as_ref()
+        .map(|s| s.recent_chat())
+        .unwrap_or_default();
+    Json(history_for(log, &id, limit))
+}
+
 async fn move_agent(
     State(hub): State<Hub>,
     Path(id): Path<String>,
@@ -483,4 +517,45 @@ async fn handle_socket(socket: axum::extract::ws::WebSocket, hub: Hub, snapshot:
         }
     }
     send_task.abort();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clawpit_scene::ChatMessage;
+
+    fn msg(n: u64, from: &str, to: &str) -> ChatMessage {
+        ChatMessage {
+            id: format!("msg-{n}"),
+            from: from.into(),
+            from_name: from.into(),
+            to: to.into(),
+            text: format!("t{n}"),
+            ts: n,
+        }
+    }
+
+    /// 档案窗口：只含该 agent 的收发、有界、保持时间正序
+    #[test]
+    fn history_filters_and_bounds() {
+        let log = vec![
+            msg(1, "human", "cc-1"),
+            msg(2, "human", "cc-2"),
+            msg(3, "cc-1", "human"),
+            msg(4, "cc-2", "cc-1"),
+            msg(5, "human", "cc-1"),
+        ];
+        let h = history_for(log.clone(), "cc-1", 50);
+        assert_eq!(
+            h.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            vec!["msg-1", "msg-3", "msg-4", "msg-5"]
+        );
+        let tail = history_for(log, "cc-1", 2);
+        assert_eq!(
+            tail.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            vec!["msg-4", "msg-5"],
+            "只留最近 N 条且保持正序"
+        );
+        assert!(history_for(vec![], "cc-404", 10).is_empty());
+    }
 }
