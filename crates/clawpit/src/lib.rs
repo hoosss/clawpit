@@ -14,10 +14,10 @@ use axum::{
     extract::{Path, Query, State, WebSocketUpgrade},
     http::StatusCode,
     response::Response,
-    routing::{delete, get, post},
+    routing::{delete, get, patch, post},
     Json, Router,
 };
-use clawpit_scene::{AgentInfo, ChatMessage, SceneEvent};
+use clawpit_scene::{AgentInfo, ChatMessage, RoomInfo, SceneEvent};
 use registry::Registry;
 use spawn::{SayRequest, SpawnManager, SpawnRequest};
 use tokio::sync::{broadcast, RwLock};
@@ -88,6 +88,9 @@ pub fn router(hub: Hub) -> Router {
         .route("/agents/import", post(import_agent))
         .route("/agents/:id/say", post(say_agent))
         .route("/agents/:id", delete(stop_agent))
+        .route("/agents/:id/move", post(move_agent))
+        .route("/rooms", get(list_rooms).post(create_room))
+        .route("/rooms/:id", patch(update_room).delete(delete_room))
         .route("/msg", post(send_msg))
         .route("/inbox", get(inbox))
         .with_state(hub)
@@ -242,6 +245,100 @@ async fn stop_agent(
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
 }
 
+// ── 房间管理：隔离是展示/分组层，消息路由仍按 id 全局直达 ──────────────
+
+async fn list_rooms(State(hub): State<Hub>) -> Json<Vec<RoomInfo>> {
+    Json(hub.state.registry.read().await.rooms())
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct CreateRoomRequest {
+    name: String,
+}
+
+async fn create_room(
+    State(hub): State<Hub>,
+    Json(req): Json<CreateRoomRequest>,
+) -> Result<Json<RoomInfo>, (StatusCode, String)> {
+    let room = hub
+        .state
+        .registry
+        .write()
+        .await
+        .create_room(&req.name)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let _ = hub
+        .state
+        .tx
+        .send(SceneEvent::RoomUpsert { room: room.clone() });
+    Ok(Json(room))
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct UpdateRoomRequest {
+    name: Option<String>,
+    archived: Option<bool>,
+}
+
+async fn update_room(
+    State(hub): State<Hub>,
+    Path(id): Path<String>,
+    Json(req): Json<UpdateRoomRequest>,
+) -> Result<Json<RoomInfo>, (StatusCode, String)> {
+    let room = hub
+        .state
+        .registry
+        .write()
+        .await
+        .update_room(&id, req.name.as_deref(), req.archived)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let _ = hub
+        .state
+        .tx
+        .send(SceneEvent::RoomUpsert { room: room.clone() });
+    Ok(Json(room))
+}
+
+async fn delete_room(
+    State(hub): State<Hub>,
+    Path(id): Path<String>,
+) -> Result<&'static str, (StatusCode, String)> {
+    let events = hub
+        .state
+        .registry
+        .write()
+        .await
+        .delete_room(&id)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    for ev in events {
+        let _ = hub.state.tx.send(ev);
+    }
+    Ok("ok")
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct MoveRequest {
+    to: String,
+}
+
+async fn move_agent(
+    State(hub): State<Hub>,
+    Path(id): Path<String>,
+    Json(req): Json<MoveRequest>,
+) -> Result<Json<AgentInfo>, (StatusCode, String)> {
+    let agent = hub
+        .state
+        .registry
+        .write()
+        .await
+        .move_agent(&id, &req.to)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let _ = hub.state.tx.send(SceneEvent::AgentUpsert {
+        agent: agent.clone(),
+    });
+    Ok(Json(agent))
+}
+
 #[derive(Debug, serde::Deserialize)]
 struct InboxQuery {
     pid: u32,
@@ -271,8 +368,12 @@ async fn inbox(State(hub): State<Hub>, Query(q): Query<InboxQuery>) -> Json<Inbo
 
 async fn scene_ws(State(hub): State<Hub>, ws: WebSocketUpgrade) -> Response {
     ws.on_upgrade(move |socket| async move {
-        let snapshot = SceneEvent::Snapshot {
-            agents: hub.state.registry.read().await.snapshot(),
+        let snapshot = {
+            let reg = hub.state.registry.read().await;
+            SceneEvent::Snapshot {
+                agents: reg.snapshot(),
+                rooms: reg.rooms(),
+            }
         };
         handle_socket(socket, hub, snapshot).await;
     })
@@ -309,8 +410,12 @@ async fn handle_socket(socket: axum::extract::ws::WebSocket, hub: Hub, snapshot:
                 Err(RecvError::Lagged(n)) => {
                     // 慢客户端丢帧：补一份全量快照自愈，避免幽灵 agent 永久残留
                     tracing::warn!(missed = n, "scene subscriber lagged, resync snapshot");
-                    let snap = SceneEvent::Snapshot {
-                        agents: send_state.registry.read().await.snapshot(),
+                    let snap = {
+                        let reg = send_state.registry.read().await;
+                        SceneEvent::Snapshot {
+                            agents: reg.snapshot(),
+                            rooms: reg.rooms(),
+                        }
                     };
                     if let Ok(json) = serde_json::to_string(&snap) {
                         if sender.send(Message::Text(json)).await.is_err() {

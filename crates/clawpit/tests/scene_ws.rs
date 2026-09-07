@@ -50,7 +50,7 @@ async fn snapshot_upsert_gone_over_ws() -> anyhow::Result<()> {
 
     // 1) 连接即快照：只有 cc-42，sleep 不算 agent
     let ev = next_scene_event(&mut ws).await;
-    let SceneEvent::Snapshot { agents } = ev else {
+    let SceneEvent::Snapshot { agents, .. } = ev else {
         panic!("首条必须是 Snapshot，实际 {ev:?}");
     };
     assert_eq!(agents.len(), 1);

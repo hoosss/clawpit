@@ -57,6 +57,20 @@ pub enum AgentState {
     Error,
 }
 
+/// 默认房间：所有 agent 的起点，常驻不可删。
+pub const DEFAULT_ROOM: &str = "lobby";
+
+/// 车间里的一个房间（隔离/分组单位）。
+/// 消息投递仍按 id 全局直达——room 是展示与管理层的隔离，不是通信边界。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoomInfo {
+    pub id: String,
+    /// 显示名（可改，不唯一约束由 registry 保证）。
+    pub name: String,
+    /// 归档后不出现在切换栏，但历史与成员关系保留。
+    pub archived: bool,
+}
+
 /// agent 是怎么进入车间的。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -96,6 +110,13 @@ pub struct AgentInfo {
     /// 注入式喊话也会用消息正文刷新它；None = 显示回退到 name。
     #[serde(default)]
     pub title: Option<String>,
+    /// 所在房间 id（默认大厅）。隔离只影响展示分组，不影响消息路由。
+    #[serde(default = "default_room")]
+    pub room: String,
+}
+
+fn default_room() -> String {
+    DEFAULT_ROOM.into()
 }
 
 /// WS 场景事件（JSON，tag = type）。
@@ -103,11 +124,20 @@ pub struct AgentInfo {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SceneEvent {
     /// 连接建立时的全量快照，之后只发增量。
-    Snapshot { agents: Vec<AgentInfo> },
+    Snapshot {
+        agents: Vec<AgentInfo>,
+        /// 房间清单（含大厅）。旧客户端忽略多余字段即向后兼容。
+        #[serde(default)]
+        rooms: Vec<RoomInfo>,
+    },
     /// 新增或变更。
     AgentUpsert { agent: AgentInfo },
     /// 消失。
     AgentGone { id: String },
+    /// 房间新增或变更（改名/归档）。
+    RoomUpsert { room: RoomInfo },
+    /// 房间删除（成员已被挪回大厅，随后的 AgentUpsert 会逐一告知）。
+    RoomGone { id: String },
     /// 车间里的一句话（气泡上墙）。
     Chat { message: ChatMessage },
 }
@@ -153,6 +183,7 @@ mod tests {
                 state: AgentState::Unknown,
                 source: Source::Discovered { pid: 42 },
                 title: None,
+                room: DEFAULT_ROOM.into(),
             },
         };
         let json = serde_json::to_string(&ev).unwrap();

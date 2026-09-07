@@ -106,6 +106,7 @@ impl SpawnManager {
             state: AgentState::Working,
             source: Source::Spawned { pid: child_pid },
             title: None,
+            room: clawpit_scene::DEFAULT_ROOM.into(),
         };
 
         let session = Arc::new(Session {

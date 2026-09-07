@@ -161,7 +161,9 @@ fn main() -> anyhow::Result<()> {
 fn apply_event(ui: &Arc<Mutex<Ui>>, ev: SceneEvent) {
     let mut u = ui.lock().unwrap();
     match ev {
-        SceneEvent::Snapshot { agents } => {
+        // 房间事件：数据层已入协议，TUI 分栏展示在 room 阶段的 UI 轮接入
+        SceneEvent::RoomUpsert { .. } | SceneEvent::RoomGone { .. } => {}
+        SceneEvent::Snapshot { agents, .. } => {
             // 快照是全量替换：选中项若已消失必须失效，否则悬空 id 会打到 400
             if let Some(sel) = &u.selected {
                 if !agents.iter().any(|a| &a.id == sel) {

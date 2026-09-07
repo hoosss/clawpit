@@ -5,20 +5,34 @@
 
 use std::collections::{HashMap, HashSet};
 
-use clawpit_scene::{AgentInfo, AgentState, SceneEvent, Source};
+use clawpit_scene::{AgentInfo, AgentState, RoomInfo, SceneEvent, Source, DEFAULT_ROOM};
 
 use crate::scanner::ProcHit;
 
 #[derive(Default)]
 pub struct Registry {
     agents: HashMap<String, AgentInfo>,
+    rooms: HashMap<String, RoomInfo>,
+    next_room: u64,
 }
 
 impl Registry {
     pub fn new() -> Self {
-        Self {
+        let mut r = Self {
             agents: HashMap::new(),
-        }
+            rooms: HashMap::new(),
+            next_room: 0,
+        };
+        // 大厅常驻：所有 agent 的默认落点，也是删房时成员的退路
+        r.rooms.insert(
+            DEFAULT_ROOM.into(),
+            RoomInfo {
+                id: DEFAULT_ROOM.into(),
+                name: "大厅".into(),
+                archived: false,
+            },
+        );
+        r
     }
 
     /// 全量快照（按 id 排序，保证渲染端稳定）。
@@ -26,6 +40,85 @@ impl Registry {
         let mut v: Vec<AgentInfo> = self.agents.values().cloned().collect();
         v.sort_by(|a, b| a.id.cmp(&b.id));
         v
+    }
+
+    /// 房间快照（按 id 排序）。
+    pub fn rooms(&self) -> Vec<RoomInfo> {
+        let mut v: Vec<RoomInfo> = self.rooms.values().cloned().collect();
+        v.sort_by(|a, b| a.id.cmp(&b.id));
+        v
+    }
+
+    /// 建房：名字不可与现存（含归档）重复，id 顺序分配 rm-N。
+    pub fn create_room(&mut self, name: &str) -> anyhow::Result<RoomInfo> {
+        let name = name.trim();
+        anyhow::ensure!(!name.is_empty(), "房间名不能为空");
+        anyhow::ensure!(
+            !self.rooms.values().any(|r| r.name == name),
+            "房间名已存在: {name}"
+        );
+        self.next_room += 1;
+        let room = RoomInfo {
+            id: format!("rm-{}", self.next_room),
+            name: name.to_string(),
+            archived: false,
+        };
+        self.rooms.insert(room.id.clone(), room.clone());
+        Ok(room)
+    }
+
+    /// 改名 / 归档切换（大厅可改名不可归档）。返回最新房间信息。
+    pub fn update_room(
+        &mut self,
+        id: &str,
+        name: Option<&str>,
+        archived: Option<bool>,
+    ) -> anyhow::Result<RoomInfo> {
+        anyhow::ensure!(self.rooms.contains_key(id), "房间不存在: {id}");
+        let new_name = name.map(str::trim).filter(|n| !n.is_empty());
+        if let Some(n) = &new_name {
+            anyhow::ensure!(
+                !self.rooms.values().any(|r| r.id != id && r.name == *n),
+                "房间名已存在: {n}"
+            );
+        }
+        if archived == Some(true) {
+            anyhow::ensure!(id != DEFAULT_ROOM, "大厅不可归档");
+        }
+        let room = self.rooms.get_mut(id).expect("上面 ensure 过存在");
+        if let Some(n) = new_name {
+            room.name = n.to_string();
+        }
+        if let Some(a) = archived {
+            room.archived = a;
+        }
+        Ok(room.clone())
+    }
+
+    /// 删房：成员挪回大厅（返回对应 upsert 事件），大厅本身不可删。
+    pub fn delete_room(&mut self, id: &str) -> anyhow::Result<Vec<SceneEvent>> {
+        anyhow::ensure!(id != DEFAULT_ROOM, "大厅不可删除");
+        anyhow::ensure!(self.rooms.contains_key(id), "房间不存在: {id}");
+        self.rooms.remove(id);
+        let mut events = vec![SceneEvent::RoomGone { id: id.to_string() }];
+        for a in self.agents.values_mut() {
+            if a.room == id {
+                a.room = DEFAULT_ROOM.into();
+                events.push(SceneEvent::AgentUpsert { agent: a.clone() });
+            }
+        }
+        Ok(events)
+    }
+
+    /// 把 agent 挪进房间（房间必须存在）。返回挪完的条目。
+    pub fn move_agent(&mut self, id: &str, to: &str) -> anyhow::Result<AgentInfo> {
+        anyhow::ensure!(self.rooms.contains_key(to), "目标房间不存在: {to}");
+        let a = self
+            .agents
+            .get_mut(id)
+            .ok_or_else(|| anyhow::anyhow!("agent 不存在: {id}"))?;
+        a.room = to.to_string();
+        Ok(a.clone())
     }
 
     /// 供 Spawn/Post/Mailbox driver 直接增改自己来源的条目。
@@ -131,10 +224,12 @@ impl Registry {
                 state: AgentState::Unknown,
                 source: Source::Discovered { pid: hit.pid },
                 title: None,
+                room: DEFAULT_ROOM.into(),
             };
-            // 扫描重建时继承旧标题：否则每轮差量比较都会抹掉它并狂发 upsert
+            // 扫描重建时继承旧标题/房间：否则每轮差量比较都会抹掉它们并狂发 upsert
             if let Some(old) = self.agents.get(&id) {
                 agent.title = old.title.clone();
+                agent.room = old.room.clone();
             }
             let unchanged = self.agents.get(&id).is_some_and(|old| *old == agent);
             if !unchanged {
@@ -202,6 +297,7 @@ mod tests {
                 state: AgentState::Unknown,
                 source: Source::Spawned { pid: 999 },
                 title: None,
+                room: DEFAULT_ROOM.into(),
             },
         );
         let events = reg.apply_discovered(vec![]);
@@ -221,6 +317,7 @@ mod tests {
                 state: AgentState::Working,
                 source: Source::Spawned { pid: 4242 },
                 title: None,
+                room: DEFAULT_ROOM.into(),
             },
         );
         // 扫描器在同一 pid 上命中 claude → 不得生成 cc-4242 双胞胎
@@ -231,5 +328,61 @@ mod tests {
         assert!(events.is_empty(), "宿主进程不重复登记");
         assert!(reg.get("cc-4242").is_none());
         assert!(reg.get("sp-1").is_some());
+    }
+
+    #[test]
+    fn room_lifecycle_and_membership() {
+        let mut reg = Registry::new();
+        // 大厅常驻
+        assert!(reg.rooms().iter().any(|r| r.id == DEFAULT_ROOM));
+        assert!(reg.delete_room(DEFAULT_ROOM).is_err(), "大厅不可删");
+        assert!(
+            reg.update_room(DEFAULT_ROOM, None, Some(true)).is_err(),
+            "大厅不可归档"
+        );
+
+        // 建房 + 重名拒绝
+        let room = reg.create_room("重构 room").unwrap();
+        assert_eq!(room.id, "rm-1");
+        assert!(reg.create_room("重构 room").is_err());
+        assert!(reg.create_room("  ").is_err());
+
+        // 入住 + 扫描继承：成员被扫描重建后房间不丢
+        reg.apply_discovered(vec![crate::scanner::ProcHit {
+            pid: 77,
+            provider: Provider::ClaudeCode,
+        }]);
+        reg.move_agent("cc-77", &room.id).unwrap();
+        reg.apply_discovered(vec![crate::scanner::ProcHit {
+            pid: 77,
+            provider: Provider::ClaudeCode,
+        }]);
+        assert_eq!(
+            reg.get("cc-77").unwrap().room,
+            room.id,
+            "扫描差量不得把人踢回大厅"
+        );
+
+        // 挪去不存在的房间 → 拒绝
+        assert!(reg.move_agent("cc-77", "rm-404").is_err());
+
+        // 改名 / 归档
+        reg.update_room(&room.id, Some("重构间"), None).unwrap();
+        assert!(
+            reg.update_room(&room.id, Some("大厅"), None).is_err(),
+            "改名不得撞大厅"
+        );
+        reg.update_room(&room.id, None, Some(true)).unwrap();
+        assert!(reg.rooms().iter().any(|r| r.id == room.id && r.archived));
+
+        // 删房：成员回大厅，事件 = RoomGone + 成员 upsert
+        let events = reg.delete_room(&room.id).unwrap();
+        assert_eq!(reg.get("cc-77").unwrap().room, DEFAULT_ROOM);
+        assert!(matches!(&events[0], SceneEvent::RoomGone { id } if id == &room.id));
+        assert!(events
+            .iter()
+            .skip(1)
+            .all(|e| matches!(e, SceneEvent::AgentUpsert { .. })));
+        assert!(reg.delete_room(&room.id).is_err(), "已删的房再删报错");
     }
 }
