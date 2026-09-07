@@ -229,10 +229,19 @@ impl Registry {
             }
             let id = format!("{}-{}", hit.provider.short(), hit.pid);
             seen.insert(id.clone());
+            // 自定义名单的显示名用可执行前缀（zcode → zc-123），比 ag-123 好认
+            let name = hit
+                .exe
+                .as_ref()
+                .map(|e| {
+                    let prefix: String = e.chars().take(2).collect();
+                    format!("{prefix}-{}", hit.pid)
+                })
+                .unwrap_or_else(|| id.clone());
             let mut agent = AgentInfo {
                 id: id.clone(),
                 provider: hit.provider,
-                name: id.clone(),
+                name,
                 state: AgentState::Unknown,
                 source: Source::Discovered { pid: hit.pid },
                 title: None,
@@ -272,7 +281,11 @@ mod tests {
     use clawpit_scene::Provider;
 
     fn hit(pid: u32, provider: Provider) -> ProcHit {
-        ProcHit { pid, provider }
+        ProcHit {
+            pid,
+            provider,
+            exe: None,
+        }
     }
 
     #[test]
@@ -336,6 +349,7 @@ mod tests {
         let events = reg.apply_discovered(vec![crate::scanner::ProcHit {
             pid: 4242,
             provider: Provider::ClaudeCode,
+            exe: None,
         }]);
         assert!(events.is_empty(), "宿主进程不重复登记");
         assert!(reg.get("cc-4242").is_none());
@@ -363,11 +377,13 @@ mod tests {
         reg.apply_discovered(vec![crate::scanner::ProcHit {
             pid: 77,
             provider: Provider::ClaudeCode,
+            exe: None,
         }]);
         reg.move_agent("cc-77", &room.id).unwrap();
         reg.apply_discovered(vec![crate::scanner::ProcHit {
             pid: 77,
             provider: Provider::ClaudeCode,
+            exe: None,
         }]);
         assert_eq!(
             reg.get("cc-77").unwrap().room,

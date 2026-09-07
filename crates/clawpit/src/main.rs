@@ -8,6 +8,7 @@ use clawpit::{discovery_loop, router, DEFAULT_PORT, DEFAULT_SCAN_INTERVAL};
 /// - `CLAWPIT_PORT`：监听端口，默认 7664
 /// - `CLAWPIT_PROC_ROOT`：proc 根目录，默认 /proc（测试用）
 /// - `CLAWPIT_HOME`：持久化目录，默认 ~/.clawpit（events.jsonl 事件日志）
+/// - `CLAWPIT_AGENTS`：自定义 agent 可执行名（逗号分隔），如 `zcode,qwen-code`
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // `clawpit mcp`：不启 daemon，打印把 clawpit-mcp 接入各 agent CLI 的现成配置。
@@ -44,11 +45,21 @@ async fn main() -> anyhow::Result<()> {
             clawpit::Hub::new()
         }
     };
+    // CLAWPIT_AGENTS：自定义 agent 可执行名名单（逗号分隔）——
+    // zcode / qwen-code 这类长尾 CLI 零改码即可被发现收编（显示名 zc-<pid>）
+    let extra_agents: Vec<String> = std::env::var("CLAWPIT_AGENTS")
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
     tokio::spawn(discovery_loop(
         proc_root,
         claude_home,
         hub.state.clone(),
         DEFAULT_SCAN_INTERVAL,
+        extra_agents,
     ));
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));

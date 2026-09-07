@@ -45,6 +45,8 @@
   #msg{background:#0c0d17;border:1px solid #2a2c3f;color:#eee;padding:7px;border-radius:3px;font:inherit}
   #msg:focus{outline:1px solid #f7d51d}
   .btns{display:flex;gap:6px}
+  #prov{flex:none;width:76px;background:#0c0d17;border:1px solid #2a2c3f;color:#eee;
+    border-radius:3px;font:inherit;font-size:11px;padding:6px 2px;cursor:pointer}
   button{flex:1;background:#26294a;border:1px solid #3a3d5f;color:#e8e8e8;padding:6px;border-radius:3px;
     font:inherit;cursor:pointer}
   button:hover{background:#31355c}
@@ -84,6 +86,14 @@
     <div id="ctrl">
       <input id="msg" placeholder="对选中 worker 说话（回车发送）"/>
       <div class="btns">
+        <select id="prov" title="招工的 agent 类型">
+          <option value="claude_code">claude</option>
+          <option value="codex">codex</option>
+          <option value="gemini">gemini</option>
+          <option value="aider">aider</option>
+          <option value="opencode">opencode</option>
+          <option value="generic">sh</option>
+        </select>
         <button id="b-send">说话</button>
         <button id="b-spawn">招工</button>
         <button id="b-stop">解雇</button>
@@ -273,8 +283,9 @@ async function speak(){
 document.getElementById('b-send').onclick = speak;
 document.getElementById('msg').addEventListener('keydown', e => { if (e.key==='Enter') speak(); });
 document.getElementById('b-spawn').onclick = async () => {
+  const provider = document.getElementById('prov').value;
   try {
-    const a = await api('POST', '/agents', {provider:'claude_code'});
+    const a = await api('POST', '/agents', {provider});
     // 招进当前房（server 默认落大厅，客户端补一步移动）
     if (currentRoom !== 'lobby')
       await api('POST', `/agents/${a.id}/move`, {to: currentRoom}).catch(() => {});

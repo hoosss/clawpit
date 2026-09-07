@@ -266,6 +266,7 @@ mod tests {
         let hit = crate::scanner::ProcHit {
             pid: 4242,
             provider: Provider::ClaudeCode,
+            exe: None,
         };
         state.registry.write().await.apply_discovered(vec![hit]);
 
@@ -289,6 +290,7 @@ mod tests {
         let hit = crate::scanner::ProcHit {
             pid: 777,
             provider: Provider::Codex,
+            exe: None,
         };
         state.registry.write().await.apply_discovered(vec![hit]);
         let (msg, _) = mail.send(Some(777), HUMAN, "我是 codex").await?;
@@ -318,6 +320,7 @@ mod tests {
             .apply_discovered(vec![crate::scanner::ProcHit {
                 pid: 888,
                 provider: Provider::ClaudeCode,
+                exe: None,
             }]);
         let (_, d) = mail.send(None, "cc-888", "在吗").await?;
         assert_eq!(d, Delivery::Inbox);

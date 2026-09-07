@@ -133,11 +133,12 @@ pub async fn discovery_loop(
     claude_home: PathBuf,
     state: AppState,
     interval: Duration,
+    extra_agents: Vec<String>,
 ) {
     let mut tick = tokio::time::interval(interval);
     loop {
         tick.tick().await;
-        let found = scanner::scan(&proc_root);
+        let found = scanner::scan(&proc_root, &extra_agents);
         // 锁内只做登记和取清单；阻塞文件 I/O（observe）放锁外，否则整个 API 被扫描串住
         let (mut events, discovered) = {
             let mut reg = state.registry.write().await;

@@ -136,6 +136,7 @@ async fn stop_on_discovered_rejected() -> anyhow::Result<()> {
     let hit = clawpit::scanner::ProcHit {
         pid: 4242,
         provider: Provider::ClaudeCode,
+        exe: None,
     };
     hub.state.registry.write().await.apply_discovered(vec![hit]);
     // 外部发现的条目归扫描器管，stop 只会制造 gone→复活闪烁
