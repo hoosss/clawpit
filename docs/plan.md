@@ -9,7 +9,8 @@
 - [x] CI：GitHub Actions（fmt + clippy -D warnings + test）
 - [x] CONTRIBUTING.md（环境/结构/约定/provider 适配指南）
 - [x] README 双语化
-- [ ] **等用户**：① 正式项目名（现工作名 clawpit）② 确认双协议 ③ GitHub 建仓发布（`git remote add` + push 需你操作或授权）
+- [ ] **等用户**：① 正式项目名（现工作名 clawpit）② 确认双协议
+- [x] GitHub 建仓发布：origin=github.com:hoosss/clawpit，main 已推、CI 多轮全绿（2026-09-07 历史已重写为 hoosss 归属）
 - [ ] Tauri 桌面壳：Web 端已内嵌，桌面化价值边际较低且需 npm 工具链——**建议降级为按需项**，想要再说
 - [ ] crates.io 发布：等定名后 `cargo publish`（工作名下发布不可逆，绝不先斩后奏）
 
@@ -72,10 +73,24 @@
 
 后续站在各自开工前细化。
 
-## 评审循环终报（2026-09-01，循环已停 ca63f0af）
+## 评审循环终报（2026-09-01，评审循环已停；"ca63f0af"为当时会话标识，非本仓库 git 对象）
 
 - 三轮全维度评审（并发注入 / MCP+Web / TUI）：36 项发现 → 27 项为真全部修复，5 项低危记录取舍，4 项复核不成立
 - 两轮变异验证：7 个突变体 6 杀 1 冗余（from_utf8_lossy 与行对齐 drain 重复防御，无害）
 - 测试 22 → 30（含 WS Lagged 自愈洪水测试）；clippy 持续 0；CI 全绿
 - 已知未自动化：Web 端 JS（人工+GIF 验证）；WS 上行 sink.send 失败丢队列消息（低危）；本地 API 无鉴权（local-first 取舍）
 - 恢复方式：`/loop 5m 不断测试代码 和code-review`——从本文件续作
+
+## M6 修复优化循环（2026-09-07，/loop 5m）
+
+用户四项诉求全部落地，逐项闭环：
+
+- [x] 喊话可达性：投递去向如实回报（stdin/tmux/收件箱三态 + UI 警示）；tmux 注入端到端真机验证；`clawpit mcp` 一键接入指引
+- [x] 小人可辨：任务名牌（观察站推断 + 注入刷新），Web/TUI/画布三处展示；provider 帽型区分
+- [x] 隔离+互通：room 子系统四阶段——数据/生命周期 API → Web 房间层 → 事件日志持久化（~/.clawpit/events.jsonl 重放）→ 会话档案；TUI Tab 换房补齐
+- [x] 更多 agent：CLAWPIT_AGENTS 通用接入（任意 CLI 零改码收编）+ codex 状态观察（rollout 解析，fixture 验证）
+- [x] Web 矢量高清重绘（SVG 替代 canvas 拉伸）；状态角标动效；空房提示
+- [x] README 同步到 M6；本文件过期条目清理（GitHub 建仓已完成、旧会话标识注明）
+- 测试 30 → 42；clippy 持续 0；全部真机验证后 commit 即推
+
+剩余（非阻塞）：gemini/aider/opencode 状态观察（等真实环境）；docs/demo.gif 重录（等用户）；crates.io 发布（等定名）。
