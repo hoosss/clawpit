@@ -73,6 +73,8 @@
       <!-- floorrect 高度 100% 会越过 viewBox 底边，被视口裁掉——正好铺满，无需精确高度 -->
       <g id="workers"></g>
       <g id="bubbles"></g>
+      <text id="emptyhint" x="50%" y="45%" text-anchor="middle" font-size="11"
+        fill="#3f4366" letter-spacing="2" visibility="hidden"></text>
     </svg>
     <div id="rooms"></div>
     <div id="archive" hidden>
@@ -422,10 +424,34 @@ function rebuildWorkers(){
 const STATE_GLYPH = {working:'!', thinking:'...', waiting_input:'zZ', done:'OK', error:'X!', unknown:'?'};
 const STATE_FILL = {error:'#ff6b6b', done:'#6bff8f'};
 
+// 状态角标：静态字形 + 时间驱动的微动效（点的呼吸、zZ 上浮、! 的脉冲）
+function stateBadge(a, t){
+  const s = t / 1000;
+  switch (a.state){
+    case 'thinking': {
+      const n = 1 + Math.floor((s * 2) % 3);          // . .. ... 循环
+      return { text: '.'.repeat(n), fill: '#ffe', dy: 0, alpha: 1 };
+    }
+    case 'waiting_input': {
+      const float = Math.sin(s * 2) * 1.2;            // zZ 缓缓上下
+      return { text: 'zZ', fill: '#ffe', dy: float, alpha: .85 };
+    }
+    case 'working': {
+      const pulse = .55 + .45 * Math.abs(Math.sin(s * 6)); // ! 脉冲
+      return { text: '!', fill: '#ffe', dy: 0, alpha: pulse };
+    }
+    default:
+      return null;                                     // done/error/unknown 静态
+  }
+}
+
 // 每帧：浮沉/挥臂走亚像素（旧 canvas 版取整，一格一格跳）
 function frame(t){
   const ra = roomAgents();
   const ss = slots(ra.length);
+  const hint = document.getElementById('emptyhint');
+  hint.textContent = ra.length ? '' : `「${roomName(currentRoom)}」空无一人 —— 招工，或右键小人移入`;
+  hint.setAttribute('visibility', ra.length ? 'hidden' : 'visible');
   ra.forEach((a, i) => {
     const el = workerEls[i];
     if (!el) return;
@@ -440,8 +466,11 @@ function frame(t){
       el.armL.setAttribute('y', 6);
       el.armR.setAttribute('y', 6);
     }
-    el.st.textContent = STATE_GLYPH[a.state] || '?';
-    el.st.setAttribute('fill', STATE_FILL[a.state] || '#ffe');
+    const badge = stateBadge(a, t);
+    el.st.textContent = badge ? badge.text : (STATE_GLYPH[a.state] || '?');
+    el.st.setAttribute('fill', badge ? badge.fill : (STATE_FILL[a.state] || '#ffe'));
+    el.st.setAttribute('y', -2 + (badge ? badge.dy : 0));
+    el.st.setAttribute('opacity', badge ? badge.alpha : 1);
     // 选框：非缩放描边，任何窗口尺寸下都是 2 物理像素的锐利黄框
     let sel = el.g.querySelector('.selbox');
     if (a.id === selected && !sel){
