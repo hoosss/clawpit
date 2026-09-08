@@ -295,7 +295,7 @@ async function speak(){
     el.value = '';
     // 投递去向如实相告：收件箱是死信候选（对方不在 tmux 且未配 MCP 就永远看不到）
     if (r.delivered === 'inbox')
-      setStatus(`⚠ 只进了 ${selected} 的收件箱——它不在 tmux 也没配 clawpit MCP，收不到。让它跑在 tmux 里，或用「招工」直管`);
+      setStatus(`⚠ 只进了 ${selected} 的收件箱（它不在 tmux 也没配 MCP，要等它取信）。修法：终端跑一次 clawpit mcp install（全平台无 sudo）；或让它跑在 tmux / 用「招工」直管`);
     else if (r.delivered === 'wall')
       setStatus('已上墙');
     else
