@@ -346,8 +346,8 @@ function layout(){
 }
 new ResizeObserver(layout).observe(document.getElementById('stage'));
 
-// 工位布局：横向优先（每行按宽度挤满 72 宽的工位），最多 4 行——
-// 窄窗口自动折行，工人再多也画在画布内
+// 工位布局：横向优先（每行按 72 宽的最小工位排），最多 4 行——
+// 宽房间把间距放宽到 96 给名牌留呼吸感；窄窗口自动折行
 function slots(n){
   const out = [];
   if (n === 0) return out;
@@ -355,8 +355,20 @@ function slots(n){
   const perRow = Math.max(1, Math.floor((sceneW - x0 - 20) / 72));
   const rows = Math.min(4, Math.ceil(n / perRow));
   const cols = Math.ceil(n / rows);
-  const dx = Math.max(24, Math.min(72, Math.floor((sceneW - x0 - 20) / cols)));
+  const dx = Math.max(24, Math.min(96, Math.floor((sceneW - x0 - 20) / cols)));
   for (let i = 0; i < n; i++) out.push({x: x0 + (i%cols)*dx, y: y0 + Math.floor(i/cols)*dy});
+  return out;
+}
+
+// 按显示宽度截断：中文全角 ≈1em（7px 字号下 7 单位），ASCII ≈0.6em。
+// 光数字符会骗人——12 个汉字 84 单位，直接叠到邻座名牌上。
+function fitText(s, max){
+  let w = 0, out = '';
+  for (const ch of s){
+    const cw = ch.codePointAt(0) > 0x2e7f ? 7 : 4.2;
+    if (w + cw > max - 7){ return out + '…'; }
+    out += ch; w += cw;
+  }
   return out;
 }
 function slotOf(id){
@@ -403,10 +415,13 @@ function rebuildWorkers(){
       (HATS[a.provider] || HATS.generic)(c) +
       `<rect x="4" y="2" width="1.2" height="1.4" fill="#222"/>` +
       `<rect x="8" y="2" width="1.2" height="1.4" fill="#222"/>` +
-      `<text class="name" x="-2" y="24" font-size="7" fill="#cfd3ff"></text>` +
+      `<text class="name" x="-2" y="22" font-size="7" fill="#cfd3ff"></text>` +
+      `<text class="ttl" x="-2" y="30" font-size="6" fill="#8890b0"></text>` +
       `<text class="st" x="13" y="-2" font-size="7" fill="#ffe"></text>`;
-    // 名牌优先显示任务标题（一眼分辨每只小人在干什么），没有才回退 id
-    g.querySelector('.name').textContent = (a.title || a.name).slice(0, 12);
+    // 名牌两行：上行 id、下行任务标题（按显示宽度截断，全角半角有别），互不叠字
+    g.querySelector('.name').textContent = fitText(a.name, 58);
+    const ttl = g.querySelector('.ttl');
+    ttl.textContent = a.title ? fitText(a.title, 58) : '';
     g.addEventListener('click', () => { selected = a.id; renderList(); });
     // 右键小人 → 移房（按名字，不存在则新建）
     g.addEventListener('contextmenu', e => {
