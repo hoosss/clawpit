@@ -16,6 +16,27 @@
   .room:hover{background:#31355c}
   .room.on{background:#f7d51d;color:#111;border-color:#f7d51d;font-weight:bold}
   .room.add{color:#f7d51d;border-style:dashed}
+  #taskboard{position:absolute;top:60px;left:12px;right:12px;bottom:12px;z-index:11;
+    background:rgba(18,19,31,.97);border:2px solid #2a2c3f;display:flex;flex-direction:column}
+  #taskboard[hidden]{display:none}
+  #tb-head{display:flex;align-items:center;gap:8px;padding:8px 10px;color:#f7d51d;
+    border-bottom:2px solid #2a2c3f;letter-spacing:1px;font-size:12px}
+  #tb-new{flex:1;display:flex;gap:6px;padding:8px 10px;border-bottom:1px solid #20223a}
+  #tb-title{flex:1;background:#0c0d17;border:1px solid #2a2c3f;color:#eee;padding:6px;border-radius:3px;font:inherit;font-size:12px}
+  #tb-prov{background:#0c0d17;border:1px solid #2a2c3f;color:#eee;border-radius:3px;font:inherit;font-size:11px;padding:6px 2px;cursor:pointer}
+  #tb-cols{flex:1;display:flex;gap:8px;padding:8px;min-height:0}
+  .tcol{flex:1;display:flex;flex-direction:column;min-width:0}
+  .tcol h4{margin:0 0 6px;color:#7d84a8;font-size:10px;letter-spacing:2px;font-weight:normal;
+    border-bottom:1px solid #20223a;padding-bottom:4px}
+  .tcol-list{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:6px}
+  .tcard{background:#1c1e30;border:1px solid #2a2c3f;border-left:3px solid #8890b0;border-radius:3px;padding:6px 8px;font-size:11px}
+  .tcard.assigned{border-left-color:#f7d51d}
+  .tcard.done{border-left-color:#6bff8f;opacity:.65}
+  .tcard.failed{border-left-color:#ff6b6b}
+  .tcard .tt{color:#e8e8e8;line-height:1.35;word-break:break-all}
+  .tcard .tm{color:#8890b0;font-size:10px;margin-top:3px}
+  .tcard .ops{margin-top:5px;display:flex;gap:4px}
+  .tcard .ops button{font-size:10px;padding:2px 8px;letter-spacing:0}
   #archive{position:absolute;top:60px;right:12px;bottom:12px;width:340px;z-index:10;
     background:rgba(18,19,31,.96);border:2px solid #2a2c3f;display:flex;flex-direction:column}
   #archive[hidden]{display:none}
@@ -84,6 +105,27 @@
         fill="#3f4366" letter-spacing="2" visibility="hidden"></text>
     </svg>
     <div id="rooms"></div>
+    <div id="taskboard" hidden>
+      <div id="tb-head"><span>任务板 · 统一调度</span><span id="tb-count" style="color:#8890b0"></span>
+        <span style="flex:1"></span><button id="tb-close" style="flex:none;width:auto;padding:3px 10px">✕</button></div>
+      <div id="tb-new">
+        <input id="tb-title" placeholder="新任务标题（回车或点创建即调度）"/>
+        <select id="tb-prov">
+          <option value="">自动</option>
+          <option value="claude_code">claude</option>
+          <option value="codex">codex</option>
+          <option value="gemini">gemini</option>
+          <option value="aider">aider</option>
+          <option value="opencode">opencode</option>
+        </select>
+        <button id="tb-create" style="flex:none;width:auto;padding:6px 14px">创建</button>
+      </div>
+      <div id="tb-cols">
+        <div class="tcol"><h4>排队</h4><div class="tcol-list" id="tc-queued"></div></div>
+        <div class="tcol"><h4>进行中</h4><div class="tcol-list" id="tc-assigned"></div></div>
+        <div class="tcol"><h4>完成 / 失败</h4><div class="tcol-list" id="tc-done"></div></div>
+      </div>
+    </div>
     <div id="archive" hidden>
       <div id="archive-head"><span id="archive-title">档案</span><button id="archive-close">✕</button></div>
       <div id="archive-list"></div>
@@ -114,6 +156,7 @@
         <button id="b-spawn">招工</button>
         <button id="b-stop">解雇</button>
         <button id="b-hist">档案</button>
+        <button id="b-task">任务</button>
       </div>
     </div>
     <div id="status">connecting…</div>
@@ -135,6 +178,7 @@ let selected = null;
 let connected = false;
 let rooms = [{id:'lobby', name:'大厅', archived:false}];   // 快照会带全量
 let currentRoom = 'lobby';
+let tasks = [];            // [{id,title,brief,status,assignee,created_by,room}]
 
 // ── WS：同一场景协议 ───────────────────────────────────────────
 let ws, retry = 1000;
@@ -150,11 +194,13 @@ function connect(){
     const ev = JSON.parse(e.data);
     if (ev.type === 'snapshot'){
       agents = ev.agents;
+      tasks = ev.tasks || [];
       if (ev.rooms && ev.rooms.length) rooms = ev.rooms;
       // 快照是全量替换：选中项若已消失必须失效，否则悬空 id 会打到 400
       if (selected && !agents.some(a => a.id === selected)) selected = null;
       if (!rooms.some(r => r.id === currentRoom)) currentRoom = 'lobby';
       renderRooms();
+      renderTasks();
     }
     else if (ev.type === 'agent_upsert'){
       const i = agents.findIndex(a => a.id === ev.agent.id);
@@ -170,6 +216,16 @@ function connect(){
       i >= 0 ? rooms[i] = ev.room : rooms.push(ev.room);
       rooms.sort((a,b) => a.id < b.id ? -1 : 1);
       renderRooms();
+    }
+    else if (ev.type === 'task_upsert'){
+      const i = tasks.findIndex(t => t.id === ev.task.id);
+      i >= 0 ? tasks[i] = ev.task : tasks.push(ev.task);
+      tasks.sort((a,b) => a.id < b.id ? -1 : 1);
+      renderTasks();
+    }
+    else if (ev.type === 'task_gone'){
+      tasks = tasks.filter(t => t.id !== ev.id);
+      renderTasks();
     }
     else if (ev.type === 'room_gone'){
       rooms = rooms.filter(r => r.id !== ev.id);
@@ -583,6 +639,65 @@ function drawBubbles(){
   for (const [key, n] of bubbleNodes)
     if (!alive.has(key)){ n.g.remove(); bubbleNodes.delete(key); }
 }
+
+// ── 任务板：三列看板，创建即调度 ───────────────────────────────
+const taskboard = document.getElementById('taskboard');
+const TASK_COLS = {queued: 'tc-queued', assigned: 'tc-assigned', done: 'tc-done', failed: 'tc-done'};
+function renderTasks(){
+  document.getElementById('tb-count').textContent = '· ' + tasks.length;
+  for (const k of ['tc-queued', 'tc-assigned', 'tc-done'])
+    document.getElementById(k).innerHTML = '';
+  const nameOf = id => {
+    const a = agents.find(x => x.id === id);
+    return a ? (a.title ? `${a.name}（${a.title.slice(0,10)}）` : a.name) : (id || '');
+  };
+  for (const t of tasks){
+    const col = document.getElementById(TASK_COLS[t.status] || 'tc-queued');
+    const d = document.createElement('div');
+    d.className = 'tcard ' + t.status;
+    const meta = [
+      t.assignee ? '→ ' + esc(nameOf(t.assignee)) : '待调度',
+      'by ' + esc(t.created_by)
+    ].join(' · ');
+    d.innerHTML = `<div class="tt">${esc(t.title)}</div><div class="tm">${meta}</div>`;
+    const ops = document.createElement('div');
+    ops.className = 'ops';
+    if (t.status === 'assigned'){
+      const ok = document.createElement('button');
+      ok.textContent = '完成'; ok.style.flex = 'none'; ok.style.width = 'auto';
+      ok.onclick = () => api('PATCH', `/tasks/${t.id}`, {status: 'done'}).catch(e => setStatus('收账失败：'+e.message));
+      const no = document.createElement('button');
+      no.textContent = '判失败'; no.style.flex = 'none'; no.style.width = 'auto';
+      no.onclick = () => api('PATCH', `/tasks/${t.id}`, {status: 'failed'}).catch(e => setStatus('收账失败：'+e.message));
+      ops.append(ok, no);
+    }
+    const del = document.createElement('button');
+    del.textContent = '删除'; del.style.flex = 'none'; del.style.width = 'auto';
+    del.onclick = () => api('DELETE', `/tasks/${t.id}`).catch(e => setStatus('删除失败：'+e.message));
+    ops.append(del);
+    d.appendChild(ops);
+    col.appendChild(d);
+  }
+}
+async function createTask(){
+  const el = document.getElementById('tb-title');
+  const title = el.value.trim();
+  if (!title) return setStatus('任务标题不能为空');
+  const provider = document.getElementById('tb-prov').value || null;
+  try {
+    const r = await api('POST', '/tasks', {title, provider, room: currentRoom});
+    el.value = '';
+    setStatus(`任务 ${r.task.id} 已派给 ${r.assignee.name}（${r.delivered}）`);
+  } catch(e){ setStatus('创建失败：' + e.message); }
+}
+document.getElementById('b-task').onclick = () => {
+  taskboard.hidden = !taskboard.hidden;
+  if (!taskboard.hidden) renderTasks();
+};
+document.getElementById('tb-close').onclick = () => { taskboard.hidden = true; };
+document.getElementById('tb-create').onclick = createTask;
+document.getElementById('tb-title').addEventListener('keydown', e => { if (e.key === 'Enter') createTask(); });
+
 function renderSign(){
   document.getElementById('sign').textContent = 'CLAWPIT PIT CREW · ' + roomName(currentRoom);
 }

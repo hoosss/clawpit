@@ -7,6 +7,7 @@ pub mod registry;
 pub mod scanner;
 pub mod spawn;
 pub mod store;
+pub mod tasks;
 pub mod tmux;
 
 use std::{path::PathBuf, sync::Arc, time::Duration};
@@ -18,9 +19,10 @@ use axum::{
     routing::{delete, get, patch, post},
     Json, Router,
 };
-use clawpit_scene::{AgentInfo, ChatMessage, RoomInfo, SceneEvent};
+use clawpit_scene::{AgentInfo, ChatMessage, RoomInfo, SceneEvent, TaskInfo};
 use registry::Registry;
 use spawn::{SayRequest, SpawnManager, SpawnRequest};
+use tasks::TaskRegistry;
 use tokio::sync::{broadcast, RwLock};
 
 use mail::{InboxResponse, MailManager};
@@ -35,6 +37,8 @@ pub const DEFAULT_SCAN_INTERVAL: Duration = Duration::from_secs(2);
 pub struct AppState {
     pub tx: broadcast::Sender<SceneEvent>,
     pub registry: Arc<RwLock<Registry>>,
+    /// 任务表（统一调度的一等公民）。
+    pub tasks: Arc<RwLock<TaskRegistry>>,
     /// 事件日志（开了就随 emit 落盘 + 重放续号）；测试默认 None 保持无 IO。
     pub store: Option<Arc<store::Store>>,
 }
@@ -45,6 +49,7 @@ impl AppState {
         Self {
             tx,
             registry: Arc::new(RwLock::new(Registry::new())),
+            tasks: Arc::new(RwLock::new(TaskRegistry::default())),
             store: None,
         }
     }
@@ -85,15 +90,24 @@ impl Hub {
     pub fn with_persistence(dir: &std::path::Path) -> anyhow::Result<Self> {
         let (tx, _) = broadcast::channel(64);
         let mut registry = Registry::new();
-        let store = Arc::new(store::Store::open(dir, &mut registry)?);
+        let mut task_registry = TaskRegistry::default();
+        let store = Arc::new(store::Store::open(dir, &mut registry, &mut task_registry)?);
+        let next_msg = store.next_msg.load(std::sync::atomic::Ordering::SeqCst);
+        // 启动清账：重放出的 assigned 任务若承接者已不在（pty worker 不复活）→ failed
+        let live: Vec<String> = registry.snapshot().iter().map(|a| a.id.clone()).collect();
+        for t in task_registry.reconcile_boot(&live) {
+            store.record(&SceneEvent::TaskUpsert { task: t.clone() });
+            let _ = tx.send(SceneEvent::TaskUpsert { task: t });
+        }
         let state = AppState {
             tx,
             registry: Arc::new(RwLock::new(registry)),
-            store: Some(store.clone()),
+            tasks: Arc::new(RwLock::new(task_registry)),
+            store: Some(store),
         };
         let spawn = SpawnManager::new(state.clone());
         let mail = MailManager::new(state.clone(), spawn.clone());
-        mail.init_msg_counter(store.next_msg.load(std::sync::atomic::Ordering::SeqCst));
+        mail.init_msg_counter(next_msg);
         Ok(Self { mail, spawn, state })
     }
 }
@@ -121,6 +135,8 @@ pub fn router(hub: Hub) -> Router {
         .route("/agents/:id/history", get(agent_history))
         .route("/rooms", get(list_rooms).post(create_room))
         .route("/rooms/:id", patch(update_room).delete(delete_room))
+        .route("/tasks", get(list_tasks).post(create_task))
+        .route("/tasks/:id", patch(update_task).delete(delete_task))
         .route("/msg", post(send_msg))
         .route("/inbox", get(inbox))
         .with_state(hub)
@@ -177,10 +193,31 @@ pub async fn discovery_loop(
             .iter()
             .map(|(id, o)| (id.clone(), o.title.clone()))
             .collect();
-        {
+        let (mut events, reconciles) = {
             let mut reg = state.registry.write().await;
-            events.extend(reg.apply_states(&states));
-            events.extend(reg.apply_titles(&titles));
+            let mut tasks = state.tasks.write().await;
+            let evs = {
+                let mut evs = std::mem::take(&mut events);
+                evs.extend(reg.apply_states(&states));
+                evs.extend(reg.apply_titles(&titles));
+                evs
+            };
+            // 状态联动：事件里 agent 回到等人/出错 → 名下 assigned 任务收账；
+            // 消失（AgentGone）→ failed
+            let mut rec = Vec::new();
+            for ev in &evs {
+                match ev {
+                    SceneEvent::AgentUpsert { agent } => {
+                        rec.extend(tasks.reconcile_agent_state(&agent.id, agent.state))
+                    }
+                    SceneEvent::AgentGone { id } => rec.extend(tasks.reconcile_agent_gone(id)),
+                    _ => {}
+                }
+            }
+            (evs, rec)
+        };
+        for t in reconciles {
+            events.push(SceneEvent::TaskUpsert { task: t });
         }
         for ev in events {
             state.emit(ev);
@@ -278,7 +315,13 @@ async fn stop_agent(
         .stop(&id)
         .await
         .map(|_| "ok")
-        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    // 解雇后它名下的 assigned 任务收账为 failed
+    let reconciled = hub.state.tasks.write().await.reconcile_agent_gone(&id);
+    for t in reconciled {
+        hub.state.emit(SceneEvent::TaskUpsert { task: t });
+    }
+    Ok("ok")
 }
 
 // ── 房间管理：隔离是展示/分组层，消息路由仍按 id 全局直达 ──────────────
@@ -404,6 +447,114 @@ async fn move_agent(
     Ok(Json(agent))
 }
 
+// ── 任务：统一调度的一等公民（人建 / agent 经 MCP 委派） ────────────────
+
+async fn list_tasks(State(hub): State<Hub>) -> Json<Vec<TaskInfo>> {
+    Json(hub.state.tasks.read().await.snapshot())
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct CreateTaskRequest {
+    title: String,
+    #[serde(default)]
+    brief: String,
+    /// 直派指定 agent（优先级最高）
+    #[serde(default)]
+    agent_id: Option<String>,
+    /// 指定工具；没空闲就招工。都不给 → 任意空闲 → 招 claude
+    #[serde(default)]
+    provider: Option<clawpit_scene::Provider>,
+    /// 创建者 pid（MCP 委派时带）；None = human
+    #[serde(default)]
+    from_pid: Option<u32>,
+    #[serde(default)]
+    room: Option<String>,
+}
+
+async fn create_task(
+    State(hub): State<Hub>,
+    Json(req): Json<CreateTaskRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let created_by = match req.from_pid {
+        Some(pid) => hub
+            .state
+            .registry
+            .read()
+            .await
+            .find_by_pid(pid)
+            .map(|a| a.id)
+            .unwrap_or_else(|| "human".into()),
+        None => "human".into(),
+    };
+    let room = req
+        .room
+        .unwrap_or_else(|| clawpit_scene::DEFAULT_ROOM.into());
+    let dispatch = crate::tasks::DispatchRequest {
+        title: req.title,
+        brief: req.brief,
+        agent_id: req.agent_id,
+        provider: req.provider,
+        created_by,
+        room,
+    };
+    let (task, agent, delivery) = crate::tasks::dispatch(&hub, dispatch)
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok(Json(serde_json::json!({
+        "task": task,
+        "assignee": agent,
+        "delivered": delivery,
+    })))
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct UpdateTaskRequest {
+    /// 人工收账：done / failed
+    status: Option<String>,
+}
+
+async fn update_task(
+    State(hub): State<Hub>,
+    Path(id): Path<String>,
+    Json(req): Json<UpdateTaskRequest>,
+) -> Result<Json<TaskInfo>, (StatusCode, String)> {
+    let updated = {
+        let mut tasks = hub.state.tasks.write().await;
+        match req.status.as_deref() {
+            Some("done") => tasks.complete(&id),
+            Some("failed") => tasks.fail(&id),
+            other => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!("status 只支持 done/failed，收到 {other:?}"),
+                ))
+            }
+        }
+    }
+    .ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("任务 {id} 不在 assigned 态"),
+        )
+    })?;
+    hub.state.emit(SceneEvent::TaskUpsert {
+        task: updated.clone(),
+    });
+    Ok(Json(updated))
+}
+
+async fn delete_task(
+    State(hub): State<Hub>,
+    Path(id): Path<String>,
+) -> Result<&'static str, (StatusCode, String)> {
+    let removed = hub.state.tasks.write().await.remove(&id);
+    if !removed {
+        return Err((StatusCode::BAD_REQUEST, format!("任务不存在: {id}")));
+    }
+    hub.state.emit(SceneEvent::TaskGone { id });
+    Ok("ok")
+}
+
 #[derive(Debug, serde::Deserialize)]
 struct InboxQuery {
     pid: u32,
@@ -435,9 +586,11 @@ async fn scene_ws(State(hub): State<Hub>, ws: WebSocketUpgrade) -> Response {
     ws.on_upgrade(move |socket| async move {
         let snapshot = {
             let reg = hub.state.registry.read().await;
+            let tasks = hub.state.tasks.read().await.snapshot();
             SceneEvent::Snapshot {
                 agents: reg.snapshot(),
                 rooms: reg.rooms(),
+                tasks,
             }
         };
         handle_socket(socket, hub, snapshot).await;
@@ -477,9 +630,11 @@ async fn handle_socket(socket: axum::extract::ws::WebSocket, hub: Hub, snapshot:
                     tracing::warn!(missed = n, "scene subscriber lagged, resync snapshot");
                     let snap = {
                         let reg = send_state.registry.read().await;
+                        let tasks = send_state.tasks.read().await.snapshot();
                         SceneEvent::Snapshot {
                             agents: reg.snapshot(),
                             rooms: reg.rooms(),
+                            tasks,
                         }
                     };
                     if let Ok(json) = serde_json::to_string(&snap) {

@@ -100,7 +100,7 @@ fn initialize_result(req: &Value) -> Value {
         "protocolVersion": negotiate_version(req.pointer("/params/protocolVersion").and_then(Value::as_str)),
         "capabilities": { "tools": {} },
         "serverInfo": { "name": "clawpit", "version": env!("CARGO_PKG_VERSION") },
-        "instructions": "你在像素车间里。clawpit_list 查看车间成员；clawpit_send(to,text) 给同事或 human 发消息；clawpit_inbox 取你的待收消息。"
+        "instructions": "你在像素车间里。clawpit_list 查看车间成员（含任务标题/房间）；clawpit_send(to,text) 给同事或 human 发消息；clawpit_inbox 取你的待收消息；clawpit_task(title,brief,provider?) 创建任务委派给其他 agent（跨工具协作）。"
     })
 }
 
@@ -134,6 +134,20 @@ fn tools_desc() -> Value {
             "name": "clawpit_inbox",
             "description": "取走自己名下的待收消息（取走即清）",
             "inputSchema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "clawpit_task",
+            "description": "创建任务并交给合适的 agent 执行（跨工具委派）。可指定 agent_id 直派、或 provider 指定工具（没有空闲的会自动招工）、都不给则挑任意空闲 agent。任务完成情况可再查 clawpit_list。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "title": { "type": "string", "description": "任务一句话标题（必填）" },
+                    "brief": { "type": "string", "description": "完整任务描述（默认同 title）" },
+                    "provider": { "type": "string", "description": "偏好工具：claude_code/codex/gemini/aider/opencode（可选）" },
+                    "agent_id": { "type": "string", "description": "直派给指定 agent（可选，优先级最高）" }
+                },
+                "required": ["title"]
+            }
         }
     ])
 }
@@ -179,6 +193,38 @@ fn call_tool(hub: &str, req: &Value, pid_override: Option<u32>) -> Value {
         "clawpit_inbox" => match http(hub, "GET", &format!("/inbox?pid={pid}"), None) {
             Ok(body) => (format_inbox(&body), false),
             Err(e) => (format!("连不上 hub（{hub}）: {e}"), true),
+        },
+        "clawpit_task" => match args.get("title").and_then(Value::as_str) {
+            Some(title) if !title.trim().is_empty() => {
+                let body = json!({
+                    "title": title,
+                    "brief": args.get("brief").and_then(Value::as_str).unwrap_or(""),
+                    "provider": args.get("provider").and_then(Value::as_str),
+                    "agent_id": args.get("agent_id").and_then(Value::as_str),
+                    "from_pid": pid,
+                })
+                .to_string();
+                match http(hub, "POST", "/tasks", Some(&body)) {
+                    Ok(b) => {
+                        let v: Value = serde_json::from_str(&b).unwrap_or(json!({}));
+                        let tid = v.pointer("/task/id").and_then(Value::as_str).unwrap_or("?");
+                        let assignee = v
+                            .pointer("/assignee/name")
+                            .and_then(Value::as_str)
+                            .unwrap_or("?");
+                        let delivered = v
+                            .pointer("/delivered")
+                            .and_then(Value::as_str)
+                            .unwrap_or("?");
+                        (
+                            format!("任务 {tid} 已派给 {assignee}（{delivered}）"),
+                            false,
+                        )
+                    }
+                    Err(e) => (format!("创建任务失败: {e}"), true),
+                }
+            }
+            _ => ("参数错误：title 必须是非空字符串".to_string(), true),
         },
         _ => (format!("unknown tool: {name}"), true),
     };

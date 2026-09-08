@@ -19,7 +19,7 @@ use std::{
 
 use clawpit_scene::{ChatMessage, SceneEvent, Source};
 
-use crate::registry::Registry;
+use crate::{registry::Registry, tasks::TaskRegistry};
 
 /// 内存里保留的聊天条数上限（档案窗口，也是重放尾部截断长度）。
 pub const CHAT_KEEP: usize = 200;
@@ -34,7 +34,11 @@ pub struct Store {
 
 impl Store {
     /// 打开（或创建）日志，把已有事件重放进 registry。
-    pub fn open(dir: &Path, registry: &mut Registry) -> anyhow::Result<Store> {
+    pub fn open(
+        dir: &Path,
+        registry: &mut Registry,
+        tasks: &mut TaskRegistry,
+    ) -> anyhow::Result<Store> {
         std::fs::create_dir_all(dir)?;
         let path = dir.join("events.jsonl");
         let mut chat = Vec::new();
@@ -56,6 +60,10 @@ impl Store {
                     }
                     SceneEvent::AgentGone { id } => {
                         registry.remove(&id);
+                    }
+                    SceneEvent::TaskUpsert { task } => tasks.upsert(task),
+                    SceneEvent::TaskGone { id } => {
+                        tasks.remove(&id);
                     }
                     SceneEvent::Chat { message } => {
                         if let Some(n) = message
@@ -155,7 +163,7 @@ mod tests {
         };
         {
             let mut reg = Registry::new();
-            let store = Store::open(dir.path(), &mut reg)?;
+            let store = Store::open(dir.path(), &mut reg, &mut TaskRegistry::default())?;
             store.record(&SceneEvent::RoomUpsert { room: room.clone() });
             store.record(&SceneEvent::AgentUpsert {
                 agent: disc_agent("cc-42", "rm-1"),
@@ -165,7 +173,7 @@ mod tests {
         }
         // 重启：新 registry + 重放
         let mut reg2 = Registry::new();
-        let store2 = Store::open(dir.path(), &mut reg2)?;
+        let store2 = Store::open(dir.path(), &mut reg2, &mut TaskRegistry::default())?;
         assert!(reg2
             .rooms()
             .iter()
@@ -189,7 +197,7 @@ mod tests {
         let dir = tempfile::tempdir()?;
         {
             let mut reg = Registry::new();
-            let store = Store::open(dir.path(), &mut reg)?;
+            let store = Store::open(dir.path(), &mut reg, &mut TaskRegistry::default())?;
             let spawned = AgentInfo {
                 source: Source::Spawned { pid: 7 },
                 ..disc_agent("sp-1", "lobby")
@@ -200,7 +208,7 @@ mod tests {
             });
         }
         let mut reg2 = Registry::new();
-        Store::open(dir.path(), &mut reg2)?;
+        Store::open(dir.path(), &mut reg2, &mut TaskRegistry::default())?;
         assert!(
             reg2.get("sp-1").is_none(),
             "Spawned 的 pty 随上次 hub 死了，不得复活"
@@ -213,7 +221,7 @@ mod tests {
     fn chat_ring_bounded() -> anyhow::Result<()> {
         let dir = tempfile::tempdir()?;
         let mut reg = Registry::new();
-        let store = Store::open(dir.path(), &mut reg)?;
+        let store = Store::open(dir.path(), &mut reg, &mut TaskRegistry::default())?;
         for i in 0..(CHAT_KEEP + 30) as u64 {
             store.record(&chat(i, "水"));
         }
@@ -234,7 +242,7 @@ mod tests {
         let dir = tempfile::tempdir()?;
         {
             let mut reg = Registry::new();
-            let store = Store::open(dir.path(), &mut reg)?;
+            let store = Store::open(dir.path(), &mut reg, &mut TaskRegistry::default())?;
             store.record(&chat(1, "好"));
         }
         // 模拟崩溃时的半行
@@ -243,7 +251,7 @@ mod tests {
         content.push_str("{\"type\":\"chat\",\"message\":{\"id\":\"msg-2\",\"from\":"); // 无结尾换行的残行
         std::fs::write(&path, content)?;
         let mut reg2 = Registry::new();
-        let store2 = Store::open(dir.path(), &mut reg2)?;
+        let store2 = Store::open(dir.path(), &mut reg2, &mut TaskRegistry::default())?;
         assert_eq!(store2.recent_chat().len(), 1, "残行跳过，好的那条保留");
         Ok(())
     }

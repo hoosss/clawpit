@@ -190,10 +190,21 @@ impl SpawnManager {
     async fn on_exit(self: Arc<Self>, id: &str, state: AgentState) {
         self.sessions.lock().unwrap().remove(id);
         let mut reg = self.state.registry.write().await;
-        if reg.set_state(id, state) {
+        let changed = reg.set_state(id, state);
+        if changed {
             if let Some(agent) = reg.get(id).cloned() {
                 self.state.emit(SceneEvent::AgentUpsert { agent });
             }
+        }
+        // 任务联动：worker 干完（Done）→ 名下任务完成；出错（Error）→ 失败
+        let reconciled = self
+            .state
+            .tasks
+            .write()
+            .await
+            .reconcile_agent_state(id, state);
+        for t in reconciled {
+            self.state.emit(SceneEvent::TaskUpsert { task: t });
         }
     }
 }

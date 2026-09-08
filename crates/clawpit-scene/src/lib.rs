@@ -60,6 +60,33 @@ pub enum AgentState {
 /// 默认房间：所有 agent 的起点，常驻不可删。
 pub const DEFAULT_ROOM: &str = "lobby";
 
+/// 任务状态机：queued（排队等调度）→ assigned（已派给 agent）→ done / failed。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskStatus {
+    Queued,
+    Assigned,
+    Done,
+    Failed,
+}
+
+/// 车间里的一张任务（统一调度的一等公民）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskInfo {
+    pub id: String,
+    /// 一句话标题（看板/名牌用）
+    pub title: String,
+    /// 完整任务描述（下达给 agent 的正文）
+    pub brief: String,
+    pub status: TaskStatus,
+    /// 承接的 agent id（queued 时为 None）
+    pub assignee: Option<String>,
+    /// 创建者：agent id 或 "human"
+    pub created_by: String,
+    /// 归属房间（默认发起者所在房）
+    pub room: String,
+}
+
 /// 车间里的一个房间（隔离/分组单位）。
 /// 消息投递仍按 id 全局直达——room 是展示与管理层的隔离，不是通信边界。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -132,6 +159,9 @@ pub enum SceneEvent {
         /// 房间清单（含大厅）。旧客户端忽略多余字段即向后兼容。
         #[serde(default)]
         rooms: Vec<RoomInfo>,
+        /// 任务清单。旧客户端忽略多余字段即向后兼容。
+        #[serde(default)]
+        tasks: Vec<TaskInfo>,
     },
     /// 新增或变更。
     AgentUpsert { agent: AgentInfo },
@@ -141,6 +171,10 @@ pub enum SceneEvent {
     RoomUpsert { room: RoomInfo },
     /// 房间删除（成员已被挪回大厅，随后的 AgentUpsert 会逐一告知）。
     RoomGone { id: String },
+    /// 任务新增或变更（派发/完成/失败）。
+    TaskUpsert { task: TaskInfo },
+    /// 任务删除。
+    TaskGone { id: String },
     /// 车间里的一句话（气泡上墙）。
     Chat { message: ChatMessage },
 }

@@ -168,6 +168,8 @@ fn main() -> anyhow::Result<()> {
 fn apply_event(ui: &Arc<Mutex<Ui>>, ev: SceneEvent) {
     let mut u = ui.lock().unwrap();
     match ev {
+        // 任务事件：数据层入协议；TUI 看板属平台后续（Web 先行）
+        SceneEvent::TaskUpsert { .. } | SceneEvent::TaskGone { .. } => {}
         SceneEvent::RoomUpsert { room } => {
             match u.rooms.iter_mut().find(|r| r.id == room.id) {
                 Some(slot) => *slot = room,
@@ -181,7 +183,7 @@ fn apply_event(ui: &Arc<Mutex<Ui>>, ev: SceneEvent) {
                 u.room = DEFAULT_ROOM.into(); // 成员 upsert 随后会到
             }
         }
-        SceneEvent::Snapshot { agents, rooms } => {
+        SceneEvent::Snapshot { agents, rooms, .. } => {
             // 快照是全量替换：选中项若已消失必须失效，否则悬空 id 会打到 400
             if let Some(sel) = &u.selected {
                 if !agents.iter().any(|a| &a.id == sel) {
