@@ -5,7 +5,8 @@
 <title>clawpit · 车间</title>
 <style>
   html,body{margin:0;height:100%;background:#1a1c2c;color:#e8e8e8;
-    font-family:"Courier New",ui-monospace,monospace;overflow:hidden;user-select:none}
+    font-family:ui-monospace,"Cascadia Mono",Consolas,"SF Mono",Menlo,"Courier New",monospace;
+    overflow:hidden;user-select:none}
   #app{display:flex;height:100%}
   #stage{flex:1;position:relative;min-width:0;background:#1a1c2c}
   #cv{width:100%;height:100%;display:block;cursor:crosshair}
@@ -24,35 +25,41 @@
   #archive-list{overflow-y:auto;padding:8px;font-size:11px;line-height:1.5}
   .hm{margin-bottom:7px}
   .hm .meta{color:#8890b0;font-size:10px}
-  text{font-family:ui-monospace,"Cascadia Mono",Consolas,"SF Mono",Menlo,"Courier New",monospace}
+  text{font-family:inherit}
   .worker{cursor:pointer}
   .worker:hover{filter:brightness(1.18)}
-  #side{width:264px;background:#12131f;border-left:2px solid #2a2c3f;display:flex;flex-direction:column;font-size:12px}
-  #hdr{padding:10px 12px;border-bottom:2px solid #2a2c3f;letter-spacing:1px;color:#f7d51d}
-  #agents{flex:1 1 38%;overflow-y:auto;padding:6px}
-  .agent{display:flex;align-items:center;gap:8px;padding:5px 7px;border-radius:3px;cursor:pointer}
+  #side{width:272px;background:#12131f;border-left:2px solid #2a2c3f;display:flex;flex-direction:column;font-size:12px}
+  #hdr{padding:10px 12px;border-bottom:2px solid #2a2c3f;letter-spacing:1px;color:#f7d51d;font-size:13px}
+  #hdr small{color:#8890b0;font-size:10px;letter-spacing:0;margin-left:6px}
+  .sec{flex:none;padding:7px 10px 5px;color:#7d84a8;font-size:10px;letter-spacing:2px;
+    border-bottom:1px solid #20223a}
+  .sec b{color:#a8afc9;font-weight:normal}
+  #agents-wrap{flex:1 1 40%;display:flex;flex-direction:column;min-height:0}
+  #agents{flex:1;overflow-y:auto;padding:4px}
+  #chat-wrap{flex:1 1 34%;display:flex;flex-direction:column;min-height:0;border-top:2px solid #2a2c3f}
+  .agent{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:3px;cursor:pointer}
   .agent:hover{background:#1c1e30}
   .agent.sel{background:#26294a;outline:1px solid #f7d51d}
-  .chip{width:12px;height:12px;border-radius:2px;flex:none}
+  .chip{width:11px;height:11px;border-radius:2px;flex:none}
   .acol{flex:1;min-width:0;display:flex;flex-direction:column}
-  .aname{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .astate{color:#9aa;font-size:11px}
-  .atitle{color:#8890b0;font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  #chat{flex:1 1 34%;overflow-y:auto;padding:6px;border-top:2px solid #2a2c3f;line-height:1.5}
-  .m{word-break:break-all}
+  .aname{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1.3}
+  .astate{color:#8890b0;font-size:11px}
+  .atitle{color:#6e7594;font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1.3}
+  #chat{flex:1;overflow-y:auto;padding:8px;line-height:1.55;font-size:11px}
+  .m{word-break:break-all;margin-bottom:4px}
   .m b{color:#7ee}
-  .m .t{color:#667;font-size:10px;margin-right:5px}
+  .m .t{color:#5c6484;font-size:10px;margin-right:5px}
   #ctrl{padding:8px;border-top:2px solid #2a2c3f;display:flex;flex-direction:column;gap:6px}
   #msg{background:#0c0d17;border:1px solid #2a2c3f;color:#eee;padding:7px;border-radius:3px;font:inherit}
   #msg:focus{outline:1px solid #f7d51d}
   .btns{display:flex;gap:6px}
-  #prov{flex:none;width:76px;background:#0c0d17;border:1px solid #2a2c3f;color:#eee;
+  #prov{flex:none;width:78px;background:#0c0d17;border:1px solid #2a2c3f;color:#eee;
     border-radius:3px;font:inherit;font-size:11px;padding:6px 2px;cursor:pointer}
-  button{flex:1;background:#26294a;border:1px solid #3a3d5f;color:#e8e8e8;padding:6px;border-radius:3px;
-    font:inherit;cursor:pointer}
+  button{flex:1;background:#26294a;border:1px solid #3a3d5f;color:#e8e8e8;padding:6px 2px;border-radius:3px;
+    font:inherit;font-size:11px;cursor:pointer;letter-spacing:1px}
   button:hover{background:#31355c}
   #b-stop:hover{background:#5c2333}
-  #status{padding:6px 10px;color:#9aa;font-size:11px;border-top:1px solid #2a2c3f}
+  #status{padding:6px 10px;color:#8890b0;font-size:11px;border-top:1px solid #2a2c3f;min-height:19px}
 </style>
 </head>
 <body>
@@ -83,9 +90,15 @@
     </div>
   </div>
   <div id="side">
-    <div id="hdr">▶ clawpit 车间</div>
-    <div id="agents"></div>
-    <div id="chat"></div>
+    <div id="hdr">▶ clawpit 车间 <small id="conn"></small></div>
+    <div id="agents-wrap">
+      <div class="sec">车间 <b id="agents-n"></b></div>
+      <div id="agents"></div>
+    </div>
+    <div id="chat-wrap">
+      <div class="sec">对话</div>
+      <div id="chat"></div>
+    </div>
     <div id="ctrl">
       <input id="msg" placeholder="对选中 worker 说话（回车发送）"/>
       <div class="btns">
@@ -168,7 +181,11 @@ function connect(){
     ev.type === 'chat' ? renderList() : rebuildWorkers();
   };
 }
-function setStatus(s){ document.getElementById('status').textContent = s; }
+function setStatus(s){
+  document.getElementById('status').textContent = s;
+  const conn = document.getElementById('conn');
+  conn.textContent = connected ? '· 已连接' : '· 未连接';
+}
 function send(cm){ if (ws && ws.readyState === 1) ws.send(JSON.stringify(cm)); }
 
 // ── 房间视图 ───────────────────────────────────────────────────
@@ -225,6 +242,7 @@ function renderList(){
   const box = document.getElementById('agents');
   box.innerHTML = '';
   const shown = roomAgents();
+  document.getElementById('agents-n').textContent = '· ' + shown.length + '/' + agents.length;
   if (!shown.length){
     box.innerHTML = `<div style="padding:10px;color:#667">「${esc(roomName(currentRoom))}」空无一人。<br>点「招工」招进本房，或右键小人/名单把它移进来。</div>`;
     return;
