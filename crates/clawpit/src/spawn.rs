@@ -51,7 +51,12 @@ pub struct SayRequest {
 struct Session {
     child: Mutex<Box<dyn portable_pty::Child + Send + Sync>>,
     writer: Mutex<Box<dyn Write + Send>>,
+    /// 会话输出环形缓冲（尾部 16KB）——控制台视图的数据源
+    tail: Arc<Mutex<Vec<u8>>>,
 }
+
+/// 控制台输出保留量：终端回看够用，内存有界。
+const TAIL_CAP: usize = 16 * 1024;
 
 pub struct SpawnManager {
     state: AppState,
@@ -92,11 +97,25 @@ impl SpawnManager {
         let writer = pair.master.take_writer()?;
         let reader = pair.master.try_clone_reader()?;
 
-        // 排水线程：丢弃输出（M1）；M3 在这里接 transcript 解析
+        // 排水线程：pty 缓冲不读会堵死子进程；读到环形缓冲供控制台回看
+        let tail = Arc::new(Mutex::new(Vec::new()));
+        let drain_tail = tail.clone();
         std::thread::spawn(move || {
             let mut r = reader;
             let mut buf = [0u8; 4096];
-            while std::io::Read::read(&mut r, &mut buf).unwrap_or(0) > 0 {}
+            loop {
+                match std::io::Read::read(&mut r, &mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        let mut t = drain_tail.lock().unwrap();
+                        t.extend_from_slice(&buf[..n]);
+                        let overflow = t.len().saturating_sub(TAIL_CAP);
+                        if overflow > 0 {
+                            t.drain(..overflow);
+                        }
+                    }
+                }
+            }
         });
 
         let agent = AgentInfo {
@@ -112,6 +131,7 @@ impl SpawnManager {
         let session = Arc::new(Session {
             child: Mutex::new(child),
             writer: Mutex::new(writer),
+            tail,
         });
         self.sessions
             .lock()
@@ -166,6 +186,13 @@ impl SpawnManager {
     /// worker 是否还活着（会话仍在 = 可注入）。
     pub fn is_alive(&self, id: &str) -> bool {
         self.sessions.lock().unwrap().contains_key(id)
+    }
+
+    /// 会话输出尾部（控制台视图）。死会话/未知 id = None。
+    pub fn console_tail(&self, id: &str) -> Option<String> {
+        let s = self.sessions.lock().unwrap().get(id).cloned()?;
+        let guard = s.tail.lock().unwrap();
+        Some(String::from_utf8_lossy(&guard).into_owned())
     }
 
     /// 停掉并移除 worker（对已退出的条目等于"清理"）。

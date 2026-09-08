@@ -37,6 +37,15 @@
   .tcard .tm{color:#8890b0;font-size:10px;margin-top:3px}
   .tcard .ops{margin-top:5px;display:flex;gap:4px}
   .tcard .ops button{font-size:10px;padding:2px 8px;letter-spacing:0}
+  #console{position:absolute;top:60px;left:12px;right:12px;bottom:12px;z-index:11;
+    background:rgba(12,13,23,.97);border:2px solid #2a2c3f;display:flex;flex-direction:column}
+  #console[hidden]{display:none}
+  #cs-head{display:flex;justify-content:space-between;align-items:center;padding:8px 10px;
+    color:#f7d51d;border-bottom:2px solid #2a2c3f;letter-spacing:1px;font-size:12px}
+  #cs-out{flex:1;overflow-y:auto;padding:8px 10px;font-size:11px;line-height:1.45;
+    white-space:pre-wrap;word-break:break-all;color:#c9d0e8}
+  #cs-in{display:flex;gap:6px;padding:8px;border-top:1px solid #20223a}
+  #cs-msg{flex:1;background:#0c0d17;border:1px solid #2a2c3f;color:#eee;padding:7px;border-radius:3px;font:inherit}
   #archive{position:absolute;top:60px;right:12px;bottom:12px;width:340px;z-index:10;
     background:rgba(18,19,31,.96);border:2px solid #2a2c3f;display:flex;flex-direction:column}
   #archive[hidden]{display:none}
@@ -73,7 +82,8 @@
   #ctrl{padding:8px;border-top:2px solid #2a2c3f;display:flex;flex-direction:column;gap:6px}
   #msg{background:#0c0d17;border:1px solid #2a2c3f;color:#eee;padding:7px;border-radius:3px;font:inherit}
   #msg:focus{outline:1px solid #f7d51d}
-  .btns{display:flex;gap:6px}
+  .btns{display:flex;flex-wrap:wrap;gap:6px}
+  .btns button, .btns select{flex:1 1 28%}
   #prov{flex:none;width:78px;background:#0c0d17;border:1px solid #2a2c3f;color:#eee;
     border-radius:3px;font:inherit;font-size:11px;padding:6px 2px;cursor:pointer}
   button{flex:1;background:#26294a;border:1px solid #3a3d5f;color:#e8e8e8;padding:6px 2px;border-radius:3px;
@@ -126,6 +136,14 @@
         <div class="tcol"><h4>完成 / 失败</h4><div class="tcol-list" id="tc-done"></div></div>
       </div>
     </div>
+    <div id="console" hidden>
+      <div id="cs-head"><span id="cs-title">控制台</span><button id="cs-close" style="flex:none;width:auto;padding:3px 10px">✕</button></div>
+      <div id="cs-out"></div>
+      <div id="cs-in">
+        <input id="cs-msg" placeholder="直接输入发送到该会话（回车）"/>
+        <button id="cs-send" style="flex:none;width:auto;padding:6px 14px">发送</button>
+      </div>
+    </div>
     <div id="archive" hidden>
       <div id="archive-head"><span id="archive-title">档案</span><button id="archive-close">✕</button></div>
       <div id="archive-list"></div>
@@ -157,6 +175,7 @@
         <button id="b-stop">解雇</button>
         <button id="b-hist">档案</button>
         <button id="b-task">任务</button>
+        <button id="b-cons">控制台</button>
       </div>
     </div>
     <div id="status">connecting…</div>
@@ -697,6 +716,51 @@ document.getElementById('b-task').onclick = () => {
 document.getElementById('tb-close').onclick = () => { taskboard.hidden = true; };
 document.getElementById('tb-create').onclick = createTask;
 document.getElementById('tb-title').addEventListener('keydown', e => { if (e.key === 'Enter') createTask(); });
+
+
+// ── 会话控制台：spawned=pty 实时输出；外部=transcript 只读；输入走邮局 ─────
+const consoleEl = document.getElementById('console');
+let consoleTimer = null, consoleTarget = null;
+const stripAnsi = s => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '');
+async function pollConsole(){
+  if (consoleTarget == null) return;
+  try {
+    const r = await api('GET', `/agents/${consoleTarget}/console`);
+    const out = document.getElementById('cs-out');
+    const stick = out.scrollTop + out.clientHeight >= out.scrollHeight - 20;
+    out.textContent = stripAnsi(r.tail || '(暂无输出)');
+    if (stick) out.scrollTop = out.scrollHeight;
+  } catch(e){ /* 目标可能已退出：保持最后画面，头部标注 */ }
+}
+function openConsole(){
+  if (!selected){ setStatus('先选中一只 worker 再开控制台'); return; }
+  consoleTarget = selected;
+  const a = agents.find(x => x.id === selected);
+  document.getElementById('cs-title').textContent = '控制台 · ' + (a ? (a.title || a.name) : selected);
+  document.getElementById('cs-out').textContent = '';
+  consoleEl.hidden = false;
+  pollConsole();
+  clearInterval(consoleTimer);
+  consoleTimer = setInterval(pollConsole, 1000);
+}
+function closeConsole(){
+  consoleEl.hidden = true;
+  clearInterval(consoleTimer); consoleTimer = null; consoleTarget = null;
+}
+async function consoleSend(){
+  const el = document.getElementById('cs-msg');
+  const text = el.value.trim();
+  if (!text || consoleTarget == null) return;
+  try {
+    const r = await api('POST', '/msg', {from_pid: null, to: consoleTarget, text});
+    el.value = '';
+    setStatus(`已发送（${r.delivered === 'inbox' ? '进收件箱' : r.delivered}）`);
+  } catch(e){ setStatus('发送失败：' + e.message); }
+}
+document.getElementById('b-cons').onclick = openConsole;
+document.getElementById('cs-close').onclick = closeConsole;
+document.getElementById('cs-send').onclick = consoleSend;
+document.getElementById('cs-msg').addEventListener('keydown', e => { if (e.key === 'Enter') consoleSend(); });
 
 function renderSign(){
   document.getElementById('sign').textContent = 'CLAWPIT PIT CREW · ' + roomName(currentRoom);

@@ -205,6 +205,16 @@ fn clean_title(s: &str) -> String {
     out
 }
 
+/// 外部 codex 会话的原始输出尾部（控制台只读视图）。
+pub fn read_codex_raw_tail(proc_root: &Path, pid: u32) -> Option<String> {
+    resolve_codex_transcript(proc_root, pid).and_then(|p| tail_utf8(&p))
+}
+
+/// 外部 claude 会话的原始输出尾部（控制台只读视图）。
+pub fn read_raw_tail(proc_root: &Path, pid: u32, claude_home: &Path) -> Option<String> {
+    resolve_transcript(proc_root, pid, claude_home).and_then(|p| tail_utf8(&p))
+}
+
 /// codex 版 read_observation。
 pub fn read_codex_observation(proc_root: &Path, pid: u32) -> Observation {
     let Some(path) = resolve_codex_transcript(proc_root, pid) else {

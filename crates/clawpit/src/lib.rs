@@ -133,6 +133,7 @@ pub fn router(hub: Hub) -> Router {
         .route("/agents/:id", delete(stop_agent))
         .route("/agents/:id/move", post(move_agent))
         .route("/agents/:id/history", get(agent_history))
+        .route("/agents/:id/console", get(agent_console))
         .route("/rooms", get(list_rooms).post(create_room))
         .route("/rooms/:id", patch(update_room).delete(delete_room))
         .route("/tasks", get(list_tasks).post(create_task))
@@ -553,6 +554,54 @@ async fn delete_task(
     }
     hub.state.emit(SceneEvent::TaskGone { id });
     Ok("ok")
+}
+
+
+#[derive(Debug, serde::Serialize)]
+struct ConsoleResponse {
+    /// 会话输出尾部（spawned=pty 环形 16KB；discovered=transcript 只读尾）
+    tail: String,
+}
+
+/// 会话控制台：spawned 读 pty 环形缓冲；外部 claude/codex 读 transcript（只读）。
+async fn agent_console(
+    State(hub): State<Hub>,
+    Path(id): Path<String>,
+) -> Result<Json<ConsoleResponse>, (StatusCode, String)> {
+    if let Some(tail) = hub.spawn.console_tail(&id) {
+        return Ok(Json(ConsoleResponse { tail }));
+    }
+    let agent = hub
+        .state
+        .registry
+        .read()
+        .await
+        .get(&id)
+        .cloned()
+        .ok_or_else(|| (StatusCode::BAD_REQUEST, format!("agent 不存在: {id}")))?;
+    let proc_root =
+        PathBuf::from(std::env::var("CLAWPIT_PROC_ROOT").unwrap_or_else(|_| "/proc".into()));
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    let claude_home =
+        std::env::var("CLAWPIT_CLAUDE_HOME").unwrap_or_else(|_| format!("{home}/.claude"));
+    let tail = match (agent.provider, &agent.source) {
+        (
+            clawpit_scene::Provider::ClaudeCode,
+            clawpit_scene::Source::Discovered { pid },
+        ) => observe::read_raw_tail(&proc_root, *pid, std::path::Path::new(&claude_home)),
+        (
+            clawpit_scene::Provider::Codex,
+            clawpit_scene::Source::Discovered { pid },
+        ) => observe::read_codex_raw_tail(&proc_root, *pid),
+        _ => None,
+    }
+    .ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("{id} 没有可读的会话输出（外部会话仅支持 claude/codex 的 transcript）"),
+        )
+    })?;
+    Ok(Json(ConsoleResponse { tail }))
 }
 
 #[derive(Debug, serde::Deserialize)]
